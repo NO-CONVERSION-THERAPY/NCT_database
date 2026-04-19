@@ -1,0 +1,36 @@
+{
+  "name": "nct-api-sql",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/prepare-local-d1.mjs",
+    "dev": "concurrently -k \"npm:dev:worker\" \"npm:dev:client\"",
+    "dev:client": "vite --host 0.0.0.0",
+    "dev:worker": "wrangler dev --local --port 8787 --persist-to .wrangler/state",
+    "build": "vite build",
+    "deploy": "npm run build && wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck",
+    "db:migrate": "wrangler d1 migrations apply DB --local --persist-to .wrangler/state",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote"
+  },
+  "dependencies": {
+    "hono": "^4.12.14",
+    "jszip": "^3.10.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "recharts": "^3.8.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260418.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "concurrently": "^9.2.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.8",
+    "wrangler": "^4.83.0"
+  }
+}

@@ -1,0 +1,34 @@
+name = "nct-api-sql"
+main = "src/worker/index.ts"
+compatibility_date = "2026-04-19"
+workers_dev = true
+
+[observability.logs]
+enabled = true
+
+[assets]
+directory = "./dist/client"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nct-api-sql"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "./migrations"
+
+[[r2_buckets]]
+binding = "EXPORT_BUCKET"
+bucket_name = "nct-api-sql-exports"
+preview_bucket_name = "nct-api-sql-exports-preview"
+
+[vars]
+APP_NAME = "NCT API SQL"
+DEFAULT_ENCRYPT_FIELDS = "name,phone,email,idCard"
+ENCRYPTION_KEY_VERSION = "1"
+EXPORT_EMAIL_TO = "ops@example.com"
+EXPORT_EMAIL_FROM = "NCT API SQL <exports@example.com>"
+EXPORT_TIMEZONE = "Asia/Shanghai"
+
+[triggers]
+crons = ["0 18 * * *"]

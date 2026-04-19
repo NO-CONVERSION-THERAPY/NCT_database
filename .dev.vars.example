@@ -1,0 +1,6 @@
+ENCRYPTION_KEY=replace-with-openssl-rand-base64-32
+ADMIN_TOKEN=replace-with-admin-token
+INGEST_TOKEN=replace-with-ingest-token
+SYNC_TOKEN=replace-with-sync-token
+RESEND_API_KEY=replace-with-resend-api-key
+EXPORT_WEBHOOK_URL=
