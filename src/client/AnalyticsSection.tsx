@@ -24,7 +24,7 @@ export default function AnalyticsSection(props: {
       <div className="section-title">
         <span className="eyebrow">Analysis</span>
         <h2>数据分析与可视化</h2>
-        <p>版本增长、来源分布和同步状态会随着 D1 快照实时刷新。</p>
+        <p>版本增长、来源分布和第三表状态会随着 D1 快照实时刷新。</p>
       </div>
 
       <div className="chart-grid">
@@ -69,7 +69,7 @@ export default function AnalyticsSection(props: {
         </div>
 
         <div className="chart-card">
-          <h3>Sync statuses</h3>
+          <h3>Third-table statuses</h3>
           <ResponsiveContainer width="100%" height={240}>
             <PieChart>
               <Pie

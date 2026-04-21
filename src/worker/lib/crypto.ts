@@ -1,5 +1,5 @@
 import type { EncryptedEnvelope, JsonObject } from '../../shared/types';
-import { stableStringify } from './json';
+import { parseJsonObject, stableStringify } from './json';
 
 const encoder = new TextEncoder();
 
@@ -23,7 +23,10 @@ function base64ToBytes(value: string): Uint8Array {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-async function importAesKey(secret: string): Promise<CryptoKey> {
+async function importAesKey(
+  secret: string,
+  usages: KeyUsage[],
+): Promise<CryptoKey> {
   const rawKey = base64ToBytes(secret);
   if (rawKey.byteLength !== 32) {
     throw new Error('ENCRYPTION_KEY must be a base64-encoded 32-byte value.');
@@ -34,7 +37,7 @@ async function importAesKey(secret: string): Promise<CryptoKey> {
     toArrayBuffer(rawKey),
     { name: 'AES-GCM' },
     false,
-    ['encrypt'],
+    usages,
   );
 }
 
@@ -55,7 +58,7 @@ export async function encryptObject(
   payload: JsonObject,
   secret: string,
 ): Promise<EncryptedEnvelope> {
-  const key = await importAesKey(secret);
+  const key = await importAesKey(secret, ['encrypt']);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = encoder.encode(stableStringify(payload));
   const ciphertext = await crypto.subtle.encrypt(
@@ -72,4 +75,22 @@ export async function encryptObject(
     iv: bytesToBase64(iv),
     ciphertext: bytesToBase64(new Uint8Array(ciphertext)),
   };
+}
+
+export async function decryptObject(
+  envelope: EncryptedEnvelope,
+  secret: string,
+): Promise<JsonObject> {
+  const key = await importAesKey(secret, ['decrypt']);
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: toArrayBuffer(base64ToBytes(envelope.iv)),
+    },
+    key,
+    toArrayBuffer(base64ToBytes(envelope.ciphertext)),
+  );
+
+  const decoded = new TextDecoder().decode(new Uint8Array(plaintext));
+  return parseJsonObject(decoded);
 }

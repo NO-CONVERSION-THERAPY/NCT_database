@@ -15,6 +15,14 @@ export interface EncryptedEnvelope {
   ciphertext: string;
 }
 
+export interface SecureTransferPayload {
+  keyVersion: number;
+  publicData: JsonObject;
+  encryptedData: EncryptedEnvelope;
+  encryptFields: string[];
+  syncedAt: string | null;
+}
+
 export interface RawRecord {
   id: string;
   recordKey: string;
@@ -47,6 +55,7 @@ export interface SecureRecord {
 
 export interface DownstreamClient {
   id: number;
+  entryKind: string;
   clientName: string | null;
   callbackUrl: string;
   clientVersion: number;
@@ -56,6 +65,24 @@ export interface DownstreamClient {
   lastStatus: string;
   lastResponseCode: number | null;
   lastError: string | null;
+  serviceUrl: string | null;
+  databackVersion: number | null;
+  reportCount: number | null;
+  reportedAt: string | null;
+  payload: JsonObject | null;
+  lastPullVersion: number;
+  lastPullAt: string | null;
+  lastPullStatus: string | null;
+  lastPullResponseCode: number | null;
+  lastPullError: string | null;
+}
+
+export interface SubReportPayload {
+  service: string;
+  serviceUrl: string;
+  databackVersion: number | null;
+  reportCount: number;
+  reportedAt: string;
 }
 
 export interface IngestRecordInput {
@@ -91,6 +118,41 @@ export interface SyncPayload {
   totalRecords: number;
   records: SecureRecord[];
   generatedAt: string;
+}
+
+export interface SubPushRecord {
+  recordKey: string;
+  version: number;
+  fingerprint: string;
+  payload: SecureTransferPayload;
+}
+
+export interface SubPushPayload {
+  service: string;
+  mode: 'full' | 'delta';
+  previousVersion: number;
+  currentVersion: number;
+  totalRecords: number;
+  records: SubPushRecord[];
+  generatedAt: string;
+}
+
+export interface SubDatabackExportRecord {
+  recordKey: string;
+  version: number;
+  fingerprint: string;
+  payload: SecureTransferPayload;
+  updatedAt: string;
+}
+
+export interface SubDatabackExportFile {
+  service: string;
+  serviceUrl: string;
+  afterVersion: number;
+  currentVersion: number | null;
+  exportedAt: string;
+  totalRecords: number;
+  records: SubDatabackExportRecord[];
 }
 
 export interface AnalyticsOverview {

@@ -7,7 +7,6 @@ const AnalyticsSection = lazy(() => import('./AnalyticsSection'));
 const STORAGE_KEYS = {
   admin: 'nct-api-sql-admin-token',
   ingest: 'nct-api-sql-ingest-token',
-  sync: 'nct-api-sql-sync-token',
 } as const;
 
 const sampleIngestPayload = JSON.stringify(
@@ -133,16 +132,7 @@ export default function App() {
   const [ingestToken, setIngestToken] = useState(
     () => localStorage.getItem(STORAGE_KEYS.ingest) ?? '',
   );
-  const [syncToken, setSyncToken] = useState(
-    () => localStorage.getItem(STORAGE_KEYS.sync) ?? '',
-  );
   const [ingestPayload, setIngestPayload] = useState(sampleIngestPayload);
-  const [syncClientName, setSyncClientName] = useState('demo-consumer');
-  const [syncCallbackUrl, setSyncCallbackUrl] = useState(
-    'https://example-downstream.com/sync',
-  );
-  const [syncVersion, setSyncVersion] = useState(0);
-  const [syncMode, setSyncMode] = useState<'full' | 'delta'>('full');
 
   async function loadSnapshot() {
     setLoading(true);
@@ -156,7 +146,6 @@ export default function App() {
         },
       );
       setSnapshot(nextSnapshot);
-      setSyncVersion(nextSnapshot.overview.totals.currentVersion);
     } catch (loadError) {
       const nextError =
         loadError instanceof Error ? loadError.message : 'Failed to load data.';
@@ -173,10 +162,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.ingest, ingestToken);
   }, [ingestToken]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.sync, syncToken);
-  }, [syncToken]);
 
   useEffect(() => {
     void loadSnapshot();
@@ -219,32 +204,6 @@ export default function App() {
     });
   }
 
-  async function handleSyncSubmit(
-    event: React.FormEvent<HTMLFormElement>,
-  ) {
-    event.preventDefault();
-    await runAction('Sync', async () => {
-      const response = await apiRequest<{
-        currentVersion: number;
-        pushed: boolean;
-        downstreamStatus: string;
-      }>('/api/sync', {
-        method: 'POST',
-        token: syncToken || adminToken || undefined,
-        body: {
-          clientName: syncClientName,
-          callbackUrl: syncCallbackUrl,
-          currentVersion: Number(syncVersion),
-          mode: syncMode,
-        },
-      });
-      setMessage(
-        `Sync finished. status=${response.downstreamStatus}, pushed=${String(response.pushed)}, currentVersion=${response.currentVersion}.`,
-      );
-      await loadSnapshot();
-    });
-  }
-
   async function handleRebuild() {
     await runAction('Rebuild', async () => {
       const response = await apiRequest<{
@@ -276,6 +235,22 @@ export default function App() {
     });
   }
 
+  async function handlePushNow() {
+    await runAction('Push', async () => {
+      const response = await apiRequest<{
+        totalTargets: number;
+        pushedTargets: number;
+      }>('/api/admin/push-now', {
+        method: 'POST',
+        token: adminToken || undefined,
+      });
+      setMessage(
+        `Push completed. targets=${response.totalTargets}, pushed=${response.pushedTargets}.`,
+      );
+      await loadSnapshot();
+    });
+  }
+
   const overview = snapshot?.overview;
   const rawRows =
     snapshot?.rawRecords.map((record) => [
@@ -298,12 +273,15 @@ export default function App() {
 
   const downstreamRows =
     snapshot?.downstreamClients.map((client) => [
+      client.entryKind,
       client.clientName ?? 'anonymous',
       client.callbackUrl,
-      String(client.clientVersion),
+      String(client.databackVersion ?? client.clientVersion),
       String(client.lastSyncVersion),
-      client.lastStatus,
       client.lastPushAt ?? '-',
+      client.reportedAt ?? client.lastSeenAt,
+      client.lastStatus,
+      client.reportCount === null ? '-' : String(client.reportCount),
     ]) ?? [];
 
   return (
@@ -342,12 +320,11 @@ export default function App() {
               />
             </label>
             <label className="token-field">
-              <span>Sync token</span>
+              <span>Push mode</span>
               <input
-                type="password"
-                value={syncToken}
-                onChange={(event) => setSyncToken(event.target.value)}
-                placeholder="Blank means fallback to admin token"
+                value="Cron every 20 minutes"
+                readOnly
+                placeholder="Cron every 20 minutes"
               />
             </label>
           </div>
@@ -376,6 +353,14 @@ export default function App() {
             >
               Export + email
             </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => void handlePushNow()}
+              disabled={busyAction !== null}
+            >
+              Push sub services now
+            </button>
           </div>
           <div className="status-strip">
             <span className={error ? 'status-badge danger' : 'status-badge'}>
@@ -396,12 +381,12 @@ export default function App() {
           <MetricCard
             label="Secure records"
             value={overview?.totals.secureRecords ?? 0}
-            helper="部分列加密后用于下游同步"
+            helper="部分列加密后用于主动推送到子库"
           />
           <MetricCard
-            label="Downstream clients"
+            label="Third table rows"
             value={overview?.totals.downstreamClients ?? 0}
-            helper="记录下游回传的 URL 与同步状态"
+            helper="记录子库上报与最近推送状态"
           />
           <MetricCard
             label="Current version"
@@ -427,8 +412,8 @@ export default function App() {
         <section className="glass-panel form-panel">
           <SectionTitle
             eyebrow="Debug"
-            title="数据写入与同步调试"
-            description="直接从前端构造下游请求，验证写入、加密、版本推进和回推逻辑。"
+            title="数据写入与主动推送调试"
+            description="直接验证 ingest、加密构建，以及向已登记子库执行手动推送。"
           />
           <div className="form-grid">
             <form className="action-form" onSubmit={handleIngestSubmit}>
@@ -447,51 +432,22 @@ export default function App() {
               </button>
             </form>
 
-            <form className="action-form" onSubmit={handleSyncSubmit}>
-              <h3>POST /api/sync</h3>
-              <label>
-                <span>Client name</span>
-                <input
-                  value={syncClientName}
-                  onChange={(event) => setSyncClientName(event.target.value)}
-                />
-              </label>
-              <label>
-                <span>Callback URL</span>
-                <input
-                  value={syncCallbackUrl}
-                  onChange={(event) => setSyncCallbackUrl(event.target.value)}
-                />
-              </label>
-              <label>
-                <span>Client version</span>
-                <input
-                  type="number"
-                  min={0}
-                  value={syncVersion}
-                  onChange={(event) => setSyncVersion(Number(event.target.value))}
-                />
-              </label>
-              <label>
-                <span>Mode</span>
-                <select
-                  value={syncMode}
-                  onChange={(event) =>
-                    setSyncMode(event.target.value as 'full' | 'delta')
-                  }
-                >
-                  <option value="full">full snapshot</option>
-                  <option value="delta">delta only</option>
-                </select>
-              </label>
+            <div className="action-form">
+              <h3>POST /api/admin/push-now</h3>
+              <p>
+                主库不再接收下游拉取请求。已在第三张表登记的
+                `nct-api-sql-sub` 会由 cron 每 20 分钟主动推送，
+                也可以在这里手动触发一次。
+              </p>
               <button
-                type="submit"
+                type="button"
                 className="primary-button"
+                onClick={() => void handlePushNow()}
                 disabled={busyAction !== null}
               >
-                Trigger sync
+                Trigger push
               </button>
-            </form>
+            </div>
           </div>
         </section>
 
@@ -507,8 +463,8 @@ export default function App() {
             rows={secureRows}
           />
           <TableBlock
-            title="Downstream table"
-            columns={['clientName', 'callbackUrl', 'clientVersion', 'lastSyncVersion', 'status', 'lastPushAt']}
+            title="Third table"
+            columns={['entryKind', 'name', 'url', 'reportedVersion', 'lastPushedVersion', 'lastPushAt', 'reportedAt', 'status', 'reportCount']}
             rows={downstreamRows}
           />
         </section>

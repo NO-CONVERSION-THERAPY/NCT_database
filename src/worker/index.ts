@@ -4,11 +4,15 @@ import { z } from 'zod';
 import { toJsonObject } from './lib/json';
 import {
   getAdminSnapshot,
+  getSubReportThrottleState,
   getPublicDataset,
   getPublishedPayload,
   ingestRecords,
+  isRecognizedSubService,
+  pullDatabackFromRegisteredSubs,
+  pushSecureRecordsToRegisteredSubs,
   rebuildSecureRecords,
-  recordSyncRequest,
+  recordSubReport,
 } from './lib/data';
 import { exportSnapshot } from './lib/export';
 import { assertToken } from './lib/security';
@@ -28,12 +32,16 @@ const ingestSchema = z.object({
     .min(1),
 });
 
-const syncSchema = z.object({
-  clientName: z.string().optional(),
-  callbackUrl: z.string().url(),
-  currentVersion: z.number().int().min(0),
-  mode: z.enum(['full', 'delta']).optional(),
+const subReportSchema = z.object({
+  service: z.string().min(1),
+  serviceUrl: z.string().url(),
+  databackVersion: z.number().int().min(0).nullable(),
+  reportCount: z.number().int().min(1),
+  reportedAt: z.string().min(1),
 });
+
+const PUSH_CRON = '*/20 * * * *';
+const EXPORT_CRON = '0 18 * * *';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -130,36 +138,71 @@ app.post('/api/ingest', async (context) => {
 });
 
 app.post('/api/sync', async (context) => {
+  return context.json(
+    {
+      error:
+        'Deprecated. nct-api-sql no longer accepts downstream sync requests. Registered nct-api-sql-sub services are pushed by cron every 20 minutes.',
+    },
+    410,
+  );
+});
+
+app.post('/api/sub/report', async (context) => {
   const authError = assertToken(
     context,
-    context.env.SYNC_TOKEN,
-    'Sync',
+    context.env.SUB_REPORT_TOKEN,
+    'Sub report',
   );
   if (authError) {
     return authError;
   }
 
   const payload = await context.req.json();
-  const parsed = syncSchema.safeParse(payload);
+  const parsed = subReportSchema.safeParse(payload);
   if (!parsed.success) {
     return context.json(
       {
-        error: 'Invalid sync payload.',
+        error: 'Invalid sub report payload.',
         details: parsed.error.flatten(),
       },
       400,
     );
   }
 
-  const result = await recordSyncRequest(context.env, parsed.data);
+  if (!isRecognizedSubService(parsed.data.service)) {
+    return context.json(
+      {
+        error: 'Only nct-api-sql-sub reports are accepted.',
+      },
+      403,
+    );
+  }
 
-  return context.json({
-    currentVersion: result.currentVersion,
-    pushed: result.pushed,
-    downstreamStatus: result.downstreamStatus,
-    responseCode: result.responseCode,
-    payload: result.payload,
-  });
+  const throttleState = await getSubReportThrottleState(
+    context.env.DB,
+    parsed.data.serviceUrl,
+    Math.max(0, Number(context.env.SUB_REPORT_MIN_INTERVAL_MS ?? '5000')),
+  );
+  if (throttleState) {
+    return context.json(
+      {
+        error: 'Sub report was throttled.',
+        retryAfterMs: throttleState.retryAfterMs,
+        lastSeenAt: throttleState.lastSeenAt,
+      },
+      429,
+    );
+  }
+
+  const stored = await recordSubReport(context.env.DB, parsed.data);
+
+  return context.json(
+    {
+      accepted: true,
+      stored,
+    },
+    202,
+  );
 });
 
 app.get('/api/public/secure-records', async (context) => {
@@ -239,6 +282,44 @@ app.post('/api/admin/export-now', async (context) => {
   });
 });
 
+app.post('/api/admin/push-now', async (context) => {
+  const authError = assertToken(
+    context,
+    context.env.ADMIN_TOKEN,
+    'Admin',
+  );
+  if (authError) {
+    return authError;
+  }
+
+  const results = await pushSecureRecordsToRegisteredSubs(context.env);
+  return context.json({
+    message: 'Push run completed.',
+    totalTargets: results.length,
+    pushedTargets: results.filter((item) => item.pushed).length,
+    results,
+  });
+});
+
+app.post('/api/admin/pull-now', async (context) => {
+  const authError = assertToken(
+    context,
+    context.env.ADMIN_TOKEN,
+    'Admin',
+  );
+  if (authError) {
+    return authError;
+  }
+
+  const results = await pullDatabackFromRegisteredSubs(context.env);
+  return context.json({
+    message: 'Pull run completed.',
+    totalTargets: results.length,
+    pulledTargets: results.filter((item) => item.pulled).length,
+    results,
+  });
+});
+
 app.notFound(async (context) => {
   if (context.req.path.startsWith('/api/')) {
     return context.json(
@@ -267,10 +348,22 @@ export default {
     return app.fetch(request, env, executionCtx);
   },
   scheduled(
-    _controller: ScheduledController,
+    controller: ScheduledController,
     env: Env,
     executionCtx: ExecutionContext,
   ) {
-    executionCtx.waitUntil(exportSnapshot(env));
+    if (controller.cron === PUSH_CRON) {
+      executionCtx.waitUntil(
+        (async () => {
+          await pushSecureRecordsToRegisteredSubs(env);
+          await pullDatabackFromRegisteredSubs(env);
+        })(),
+      );
+      return;
+    }
+
+    if (controller.cron === EXPORT_CRON) {
+      executionCtx.waitUntil(exportSnapshot(env));
+    }
   },
 };

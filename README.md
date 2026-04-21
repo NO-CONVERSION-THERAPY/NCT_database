@@ -4,8 +4,9 @@
 
 - 接收下游推送数据并写入未加密原始表
 - 根据原始表生成部分列加密的发布表，并维护版本号
-- 记录下游同步时回传的 URL 地址与同步状态
-- 对下游提供同步 API，并在版本落后时回推最新数据
+- 记录 `nct-api-sql-sub` 定时上报的域名、版本号和上报次数
+- 每 20 分钟主动向已登记的 `nct-api-sql-sub` 推送第二张表数据
+- 按子库版本从新到旧主动回拉 `nct_databack` 文件，并回灌到主库的 `secure_records` 与 `raw_records`
 - 定时把 D1 三张表打包到 R2，并以邮件附件形式发出
 - 提供 liquid glass 风格的管理台，用于查询、管理、分析、调试
 
@@ -32,7 +33,11 @@
 - 敏感字段的 `encrypted_*` 动态列
 
 3. `downstream_clients`
-记录下游同步时携带的 `callback_url`、版本号、同步时间、响应状态和错误信息。
+作为第三张表，统一记录：
+
+- `nct-api-sql-sub` 上报的 `serviceUrl`、`databackVersion`、`reportCount` 和原始 payload
+- 主库最近一次成功推送到该子库的版本号与时间
+- 主库最近一次成功回拉该子库的版本号、时间和状态
 
 ### 关键接口
 
@@ -77,8 +82,21 @@
 下游把数据推送到这里。Worker 会先按 ingest 顶层字段自动扩列并写 `raw_records`，再按加密规则更新 `secure_records`。
 
 - `POST /api/sync`
-下游带上当前版本号和回调 URL 请求同步。
-如果下游版本落后，Worker 会把 `secure_records` 的全量或增量内容回推到 `callbackUrl`，同时把 URL 和记要写到第三张表。
+已废弃。
+主库不再接收下游拉取同步请求，改为由 cron 主动向已登记子库推送。
+
+- `POST /api/sub/report`
+只接收 `nct-api-sql-sub` 的上报。
+收到后会把 `service`、`serviceUrl`、`databackVersion`、`reportCount`、`reportedAt` 存入第三张表。
+同一子库的重复上报会按 `SUB_REPORT_MIN_INTERVAL_MS` 做限频，过快会返回 `429`。
+
+- `POST /api/admin/push-now`
+手动触发一次“主库 -> 已登记子库”的主动推送。
+推送内容会以 `multipart/form-data` 的 JSON 附件文件发送到子库的 `POST /api/push/secure-records`。
+
+- `POST /api/admin/pull-now`
+手动触发一次“主库 <- 已登记子库”的主动回拉。
+主库会按第三表中记录的子库版本，从新到旧调用子库的 `GET /api/export/nct_databack`，接收 JSON 附件文件并导入回主库。
 
 - `GET /api/public/secure-records`
 按版本对外公布表 2 数据，可选 `mode=full|delta` 和 `currentVersion`。
@@ -92,10 +110,13 @@
 
 ```toml
 [triggers]
-crons = ["0 18 * * *"]
+crons = ["*/20 * * * *", "0 18 * * *"]
 ```
 
-这表示每天 `18:00 UTC` 触发一次。按 `Asia/Shanghai` 来看，相当于次日 `02:00`。
+其中：
+
+- `*/20 * * * *` 表示每 20 分钟执行一次“主推 + 回拉”同步周期
+- `0 18 * * *` 表示每天 `18:00 UTC` 触发导出。按 `Asia/Shanghai` 来看，相当于次日 `02:00`
 
 ## 本地开发
 
@@ -127,8 +148,22 @@ openssl rand -base64 32
 - `ADMIN_TOKEN`
 - `INGEST_TOKEN`
 - `SYNC_TOKEN`
+- `SUB_REPORT_TOKEN`
+- `SUB_PUSH_TOKEN`
+- `SUB_REPORT_MIN_INTERVAL_MS`
+- `SUB_PULL_BATCH_SIZE`
+- `SUB_PULL_RECORD_LIMIT`
+- `SUB_PULL_TIMEOUT_MS`
 
-管理台支持分别填写这三个 token；如果 `INGEST_TOKEN` 或 `SYNC_TOKEN` 留空，前端会回退使用 `ADMIN_TOKEN`。
+管理台当前直接使用 `ADMIN_TOKEN` 和 `INGEST_TOKEN`。
+`SUB_REPORT_TOKEN` 用于 `nct-api-sql-sub -> nct-api-sql` 的服务间上报鉴权。
+`SUB_PUSH_TOKEN` 用于 `nct-api-sql -> nct-api-sql-sub` 的服务间推送与回拉鉴权。
+`SUB_REPORT_MIN_INTERVAL_MS` 用于限制主库接收子库上报的最小时间间隔。
+`SUB_PULL_BATCH_SIZE` 表示每轮最多处理多少个已登记子库。
+`SUB_PULL_RECORD_LIMIT` 表示每次从单个子库拉取多少条 `nct_databack` 记录。
+`SUB_PULL_TIMEOUT_MS` 表示主库请求子库导出文件时的超时时间。
+`SYNC_TOKEN` 仍可用于保护 `GET /api/public/secure-records` 这类公开同步数据接口。
+如果 `INGEST_TOKEN` 留空，前端会回退使用 `ADMIN_TOKEN`。
 
 ### 4. 执行 D1 migration
 
@@ -229,7 +264,8 @@ npm run db:migrate:remote
 - 管理台入口：`https://api.example.com/Console`
 - 健康检查：`https://api.example.com/api/health`
 - 数据写入：`https://api.example.com/api/ingest`
-- 下游同步：`https://api.example.com/api/sync`
+- 主动推送：`https://api.example.com/api/admin/push-now`
+- 子库上报：`https://api.example.com/api/sub/report`
 - 公布数据：`https://api.example.com/api/public/secure-records`
 - 管理导出：`https://api.example.com/api/admin/export-now`
 
@@ -303,33 +339,27 @@ curl -X POST https://api.example.com/api/ingest \
   }'
 ```
 
-### 下游请求同步
-
-本地开发示例：
+### 手动触发主动推送
 
 ```bash
-curl -X POST http://127.0.0.1:8787/api/sync \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_SYNC_TOKEN" \
-  -d '{
-    "clientName": "analytics-service",
-    "callbackUrl": "https://example.com/sync/callback",
-    "currentVersion": 3,
-    "mode": "full"
-  }'
+curl -X POST https://api.example.com/api/admin/push-now \
+  -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
-生产环境自定义域名示例：
+### 子库上报
+
+`/api/sub/report` 只接受 `nct-api-sql-sub` 的上报，其他 `service` 会被拒绝。
 
 ```bash
-curl -X POST https://api.example.com/api/sync \
+curl -X POST https://api.example.com/api/sub/report \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_SYNC_TOKEN" \
+  -H "Authorization: Bearer YOUR_SUB_REPORT_TOKEN" \
   -d '{
-    "clientName": "analytics-service",
-    "callbackUrl": "https://consumer.example.com/sync/callback",
-    "currentVersion": 3,
-    "mode": "full"
+    "service": "NCT API SQL Sub",
+    "serviceUrl": "https://sub.example.com",
+    "databackVersion": 12,
+    "reportCount": 7,
+    "reportedAt": "2026-04-20T13:30:00.000Z"
   }'
 ```
 

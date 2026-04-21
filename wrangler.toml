@@ -31,4 +31,4 @@ EXPORT_EMAIL_FROM = "NCT API SQL <exports@example.com>"
 EXPORT_TIMEZONE = "Asia/Shanghai"
 
 [triggers]
-crons = ["0 18 * * *"]
+crons = ["*/20 * * * *", "0 18 * * *"]
