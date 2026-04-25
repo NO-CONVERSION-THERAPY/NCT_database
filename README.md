@@ -209,12 +209,12 @@ npm run dev
 
 默认会同时启动：
 
-- Vite 前端 Console：`http://127.0.0.1:5173/Console`
+- Vite 前端 Console：`http://127.0.0.1:5174/Console`
 - Wrangler 本地 Worker：`http://127.0.0.1:8787`
 
 本地开发时可以这样理解：
 
-- `http://127.0.0.1:5173/Console` 用来看管理台
+- `http://127.0.0.1:5174/Console` 用来看管理台
 - `http://127.0.0.1:8787/` 用来看 Worker 返回的公开 JSON
 - `http://127.0.0.1:8787/api/*` 用来直接调试 API
 

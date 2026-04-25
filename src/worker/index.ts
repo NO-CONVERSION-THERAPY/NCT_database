@@ -87,6 +87,21 @@ const subFormRecordsSchema = z.object({
 const EXPORT_CRON = '0 18 * * *';
 
 const app = new Hono<{ Bindings: Env }>();
+const publicCors = cors({
+  origin: '*',
+  allowHeaders: [
+    'content-type',
+    'authorization',
+    'x-api-token',
+    'x-nct-auth-alg',
+    'x-nct-key-id',
+    'x-nct-timestamp',
+    'x-nct-nonce',
+    'x-nct-body-sha256',
+    'x-nct-signature',
+  ],
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+});
 
 function adminAuthErrorResponse(context: Context, error: unknown): Response {
   if (error instanceof AdminAuthError) {
@@ -159,24 +174,8 @@ async function serveConsoleShell(context: {
   );
 }
 
-app.use(
-  '/api/*',
-  cors({
-    origin: '*',
-    allowHeaders: [
-      'content-type',
-      'authorization',
-      'x-api-token',
-      'x-nct-auth-alg',
-      'x-nct-key-id',
-      'x-nct-timestamp',
-      'x-nct-nonce',
-      'x-nct-body-sha256',
-      'x-nct-signature',
-    ],
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
-  }),
-);
+app.use('/', publicCors);
+app.use('/api/*', publicCors);
 
 app.get('/', async (context) => {
   return context.json(await getPublicDataset(context.env.DB));
