@@ -1,0 +1,67 @@
+name: Deploy Test Worker
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/deploy-test.yml"
+      - "migrations/**"
+      - "scripts/**"
+      - "src/**"
+      - "package-lock.json"
+      - "package.json"
+      - "tsconfig.json"
+      - "vite.config.ts"
+      - "wrangler.test.toml"
+
+concurrency:
+  group: nct-database-test
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: test
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      HAS_CLOUDFLARE_SECRETS: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' && secrets.CLOUDFLARE_API_TOKEN != '' }}
+    steps:
+      - name: Skip when Cloudflare secrets are absent
+        if: env.HAS_CLOUDFLARE_SECRETS != 'true'
+        run: echo "Cloudflare GitHub secrets are not configured; skipping test deploy."
+
+      - name: Checkout
+        if: env.HAS_CLOUDFLARE_SECRETS == 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: env.HAS_CLOUDFLARE_SECRETS == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        if: env.HAS_CLOUDFLARE_SECRETS == 'true'
+        run: npm ci
+
+      - name: Check
+        if: env.HAS_CLOUDFLARE_SECRETS == 'true'
+        run: npm run check
+
+      - name: Build
+        if: env.HAS_CLOUDFLARE_SECRETS == 'true'
+        run: npm run build
+
+      - name: Ensure Cloudflare test resources
+        if: env.HAS_CLOUDFLARE_SECRETS == 'true'
+        run: node scripts/ensure-cloudflare-resources.mjs --config wrangler.test.toml --migrate DB
+
+      - name: Deploy test Worker
+        if: env.HAS_CLOUDFLARE_SECRETS == 'true'
+        run: npx wrangler deploy --config wrangler.test.toml --keep-vars
