@@ -354,6 +354,47 @@ select {
   color: rgba(234, 244, 255, 0.75);
 }
 
+.import-form {
+  grid-column: 1 / -1;
+}
+
+.import-summary {
+  display: grid;
+  gap: 12px;
+  border-radius: 18px;
+  padding: 14px;
+  background: rgba(6, 18, 31, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.import-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.import-stats span {
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(114, 241, 207, 0.12);
+  color: rgba(234, 244, 255, 0.86);
+  font-size: 0.82rem;
+}
+
+.warning-text {
+  margin: 0;
+  color: var(--accent-warm);
+  line-height: 1.6;
+}
+
+.preview-table {
+  overflow-x: auto;
+}
+
+.preview-table table {
+  min-width: 720px;
+}
+
 .table-grid {
   display: grid;
   gap: 18px;

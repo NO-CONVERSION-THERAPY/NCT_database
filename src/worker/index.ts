@@ -34,6 +34,7 @@ import {
   deriveSigningPublicKeyFromPrivateKey,
   signPayloadEnvelope,
 } from './lib/security';
+import { parseTabularImport } from './lib/tabular-import';
 
 const ingestSchema = z.object({
   records: z
@@ -82,6 +83,12 @@ const subFormRecordsSchema = z.object({
       }),
     )
     .min(1),
+});
+
+const tabularImportSchema = z.object({
+  dryRun: z.boolean().optional(),
+  source: z.string().max(120).optional(),
+  text: z.string().min(1),
 });
 
 const EXPORT_CRON = '0 18 * * *';
@@ -510,6 +517,81 @@ app.post('/api/admin/rebuild-secure', async (context) => {
     processed: results.length,
     updated: results.filter((item) => item.updated).length,
     results,
+  });
+});
+
+app.post('/api/admin/import-table', async (context) => {
+  const authError = await assertAdminAuth(context);
+  if (authError) {
+    return authError;
+  }
+
+  const payload = await context.req.json();
+  const parsed = tabularImportSchema.safeParse(payload);
+  if (!parsed.success) {
+    return context.json(
+      {
+        error: 'Invalid import payload.',
+        details: parsed.error.flatten(),
+      },
+      400,
+    );
+  }
+
+  const importPlan = await parseTabularImport(parsed.data.text, {
+    source: parsed.data.source,
+  });
+
+  if (parsed.data.dryRun) {
+    return context.json({
+      dryRun: true,
+      duplicateRowCount: importPlan.duplicateRowCount,
+      inputRowCount: importPlan.inputRowCount,
+      importedCount: 0,
+      parsedRowCount: importPlan.parsedRowCount,
+      previewRecords: importPlan.previewRecords,
+      recognizedColumns: importPlan.recognizedColumns,
+      results: [],
+      skippedEmptyRowCount: importPlan.skippedEmptyRowCount,
+      unknownColumns: importPlan.unknownColumns,
+      updatedCount: 0,
+    });
+  }
+
+  if (importPlan.records.length === 0) {
+    return context.json(
+      {
+        error: 'No importable rows were found.',
+        duplicateRowCount: importPlan.duplicateRowCount,
+        inputRowCount: importPlan.inputRowCount,
+        parsedRowCount: importPlan.parsedRowCount,
+        previewRecords: importPlan.previewRecords,
+        recognizedColumns: importPlan.recognizedColumns,
+        skippedEmptyRowCount: importPlan.skippedEmptyRowCount,
+        unknownColumns: importPlan.unknownColumns,
+      },
+      400,
+    );
+  }
+
+  const results = await ingestRecords(context.env, importPlan.records);
+  if (results.some((item) => item.updated)) {
+    context.executionCtx?.waitUntil(pushSecureRecordsToRegisteredSubs(context.env));
+  }
+
+  return context.json({
+    dryRun: false,
+    duplicateRowCount: importPlan.duplicateRowCount,
+    inputRowCount: importPlan.inputRowCount,
+    importedCount: results.length,
+    message: 'Tabular import completed.',
+    parsedRowCount: importPlan.parsedRowCount,
+    previewRecords: importPlan.previewRecords,
+    recognizedColumns: importPlan.recognizedColumns,
+    results,
+    skippedEmptyRowCount: importPlan.skippedEmptyRowCount,
+    unknownColumns: importPlan.unknownColumns,
+    updatedCount: results.filter((item) => item.updated).length,
   });
 });
 

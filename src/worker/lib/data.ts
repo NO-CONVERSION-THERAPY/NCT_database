@@ -42,6 +42,10 @@ import {
   toJsonObject,
 } from './json';
 import {
+  computeRecordContentFingerprint,
+  deriveRecordContentVersion,
+} from './record-version';
+import {
   buildServiceAuthHeaders,
   deriveSigningPublicKeyFromPrivateKey,
 } from './security';
@@ -50,6 +54,7 @@ type RawRecordRow = Record<string, unknown> & {
   id: string;
   record_key: string;
   source: string;
+  version: number;
   payload_json: string;
   payload_hash: string;
   received_at: string;
@@ -337,6 +342,7 @@ function mapRawRecord(
     id: row.id,
     recordKey: row.record_key,
     source: row.source,
+    version: Number(row.version ?? 0),
     payload,
     payloadColumns: extractDynamicColumns(
       row,
@@ -818,7 +824,7 @@ export async function ingestSubFormRecords(
     ]);
 
     results.push({
-      databackFingerprint: record.databackFingerprint,
+      databackFingerprint: ingested.fingerprint,
       motherVersion: ingested.version,
       recordKey: record.recordKey,
       updated: ingested.updated,
@@ -929,7 +935,8 @@ export async function ingestRecords(
     const recordKey = readRecordKey(rawInput);
     const source = rawInput.source?.trim() || 'downstream';
     const payloadJson = stableStringify(payload);
-    const payloadHash = await sha256(payloadJson);
+    const fingerprint = await computeRecordContentFingerprint(payload);
+    const payloadHash = fingerprint;
     const receivedAt = nowIso();
     const existingRaw = await env.DB.prepare(
       `
@@ -1005,6 +1012,13 @@ export async function ingestRecords(
       'encrypted',
       encryptedFieldNames,
     );
+    const currentVersion = await getCurrentVersion(env.DB);
+    const hasChanged = existingSecure?.fingerprint !== fingerprint;
+    const nextVersion = existingSecure
+      ? hasChanged
+        ? deriveRecordContentVersion(currentVersion, fingerprint)
+        : existingSecure.version
+      : deriveRecordContentVersion(currentVersion, fingerprint);
     const publicJson = stableStringify(publicData);
     const encryptedEnvelope = await encryptObject(
       secretData,
@@ -1022,15 +1036,6 @@ export async function ingestRecords(
       );
     }
 
-    const fingerprint = await sha256(
-      stableStringify({
-        keyVersion,
-        publicData,
-        secretData,
-        encryptFields,
-      }),
-    );
-
     const rawRecordId = existingRaw?.id ?? crypto.randomUUID();
     const rawDynamicAssignments = buildDynamicAssignments(
       rawColumnMappings,
@@ -1041,6 +1046,7 @@ export async function ingestRecords(
     if (existingRaw) {
       const updateColumns = [
         'source',
+        'version',
         'payload_json',
         'payload_hash',
         'received_at',
@@ -1051,6 +1057,7 @@ export async function ingestRecords(
       ];
       const updateValues = [
         source,
+        nextVersion,
         payloadJson,
         payloadHash,
         receivedAt,
@@ -1075,6 +1082,7 @@ export async function ingestRecords(
         'id',
         'record_key',
         'source',
+        'version',
         'payload_json',
         'payload_hash',
         'received_at',
@@ -1088,6 +1096,7 @@ export async function ingestRecords(
         rawRecordId,
         recordKey,
         source,
+        nextVersion,
         payloadJson,
         payloadHash,
         receivedAt,
@@ -1109,13 +1118,6 @@ export async function ingestRecords(
     }
 
     const secureRecordId = existingSecure?.id ?? crypto.randomUUID();
-    const currentVersion = await getCurrentVersion(env.DB);
-    const hasChanged = existingSecure?.fingerprint !== fingerprint;
-    const nextVersion = existingSecure
-      ? hasChanged
-        ? currentVersion + 1
-        : existingSecure.version
-      : currentVersion + 1;
     const publicDynamicAssignments = buildDynamicAssignments(
       publicColumnMappings,
       publicFieldNames,
@@ -1237,6 +1239,7 @@ export async function ingestRecords(
       rawRecordId,
       secureRecordId,
       version: nextVersion,
+      fingerprint,
       updated: !existingSecure || hasChanged,
     });
   }
@@ -1480,14 +1483,10 @@ async function computeSecureTransferFingerprint(
   const secretData = await decryptObject(payload.encryptedData, env.ENCRYPTION_KEY);
 
   return {
-    fingerprint: await sha256(
-      stableStringify({
-        keyVersion: payload.keyVersion,
-        publicData: payload.publicData,
-        secretData,
-        encryptFields: payload.encryptFields,
-      }),
-    ),
+    fingerprint: await computeRecordContentFingerprint({
+      ...payload.publicData,
+      ...secretData,
+    }),
     secretData,
   };
 }
@@ -1495,17 +1494,24 @@ async function computeSecureTransferFingerprint(
 async function upsertRawRecord(
   env: Env,
   input: {
+    fingerprint?: string;
     payload: JsonObject;
     recordKey: string;
     receivedAt?: string;
     source: string;
+    version?: number;
   },
 ): Promise<{
   id: string;
 }> {
   const payload = toJsonObject(input.payload);
   const payloadJson = stableStringify(payload);
-  const payloadHash = await sha256(payloadJson);
+  const payloadHash = input.fingerprint ?? await computeRecordContentFingerprint(payload);
+  const inputVersion = Number(input.version);
+  const version =
+    input.version === undefined || !Number.isFinite(inputVersion)
+      ? deriveRecordContentVersion(await getCurrentVersion(env.DB), payloadHash)
+      : Math.max(0, Math.trunc(inputVersion));
   const receivedAt = input.receivedAt ?? nowIso();
   const existingRaw = await env.DB.prepare(
     `
@@ -1539,6 +1545,7 @@ async function upsertRawRecord(
   if (existingRaw) {
     const updateColumns = [
       'source',
+      'version',
       'payload_json',
       'payload_hash',
       'received_at',
@@ -1547,6 +1554,7 @@ async function upsertRawRecord(
     ];
     const updateValues = [
       input.source,
+      version,
       payloadJson,
       payloadHash,
       receivedAt,
@@ -1565,6 +1573,7 @@ async function upsertRawRecord(
       'id',
       'record_key',
       'source',
+      'version',
       'payload_json',
       'payload_hash',
       'received_at',
@@ -1576,6 +1585,7 @@ async function upsertRawRecord(
       rawRecordId,
       input.recordKey,
       input.source,
+      version,
       payloadJson,
       payloadHash,
       receivedAt,
@@ -1629,10 +1639,12 @@ async function upsertRecoveredSecureTransferRecord(
   };
   const receivedAt = typeof record.updatedAt === 'string' ? record.updatedAt : nowIso();
   const rawRecord = await upsertRawRecord(env, {
+    fingerprint: record.fingerprint,
     payload: rawPayload,
     recordKey: record.recordKey,
     receivedAt,
     source: `${SUB_RECOVERY_SOURCE_PREFIX}${serviceUrl}`,
+    version: Number(record.version),
   });
   const existingSecure = await env.DB.prepare(
     `
@@ -1861,7 +1873,7 @@ async function importSubDatabackExportFile(
     }
 
     const payload = toJsonObject(decryptedRecord.payload);
-    const fingerprint = await sha256(stableStringify(payload));
+    const fingerprint = await computeRecordContentFingerprint(payload);
     if (fingerprint !== record.fingerprint) {
       throw new Error(
         `Fingerprint mismatch while importing ${record.recordKey} from ${serviceUrl}.`,

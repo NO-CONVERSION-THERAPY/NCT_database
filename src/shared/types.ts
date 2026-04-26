@@ -38,6 +38,7 @@ export interface RawRecord {
   id: string;
   recordKey: string;
   source: string;
+  version: number;
   payload: JsonObject;
   payloadColumns: Record<string, string | null>;
   payloadHash: string;
@@ -158,6 +159,7 @@ export interface IngestResult {
   rawRecordId: string;
   secureRecordId: string;
   version: number;
+  fingerprint: string;
   updated: boolean;
 }
 

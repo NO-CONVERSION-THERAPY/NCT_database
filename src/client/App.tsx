@@ -18,6 +18,27 @@ type AdminAuthResponse = AdminAuthStatus & {
   sessionToken: string;
 };
 
+type TabularImportResponse = {
+  dryRun: boolean;
+  duplicateRowCount: number;
+  importedCount: number;
+  inputRowCount: number;
+  parsedRowCount: number;
+  previewRecords: Array<{
+    payload: Record<string, unknown>;
+    recordKey: string;
+    rowNumber: number;
+    source: string;
+  }>;
+  recognizedColumns: Array<{
+    columns: string[];
+    name: string;
+  }>;
+  skippedEmptyRowCount: number;
+  unknownColumns: string[];
+  updatedCount: number;
+};
+
 const sampleIngestPayload = JSON.stringify(
   {
     records: [
@@ -40,6 +61,12 @@ const sampleIngestPayload = JSON.stringify(
   null,
   2,
 );
+
+const sampleTabularImport = [
+  '| 机构名称 | 机构地址 | 机构所在省份 | 机构所在城市 | 机构经纬度 | 个人在校经历描述 |',
+  '| --- | --- | --- | --- | --- | --- |',
+  '| 示例机构 | 示例地址 | 广东 | 广州 | 23.129110, 113.264385 | 示例经历 |',
+].join('\n');
 
 function truncate(
   value: string,
@@ -144,6 +171,10 @@ export default function App() {
     () => localStorage.getItem(STORAGE_KEYS.ingest) ?? '',
   );
   const [ingestPayload, setIngestPayload] = useState(sampleIngestPayload);
+  const [tabularImportText, setTabularImportText] = useState(sampleTabularImport);
+  const [tabularImportSource, setTabularImportSource] = useState('admin-tabular-import');
+  const [tabularImportPreview, setTabularImportPreview] =
+    useState<TabularImportResponse | null>(null);
 
   async function loadSnapshot(token = adminSessionToken) {
     if (!token) {
@@ -298,6 +329,35 @@ export default function App() {
     });
   }
 
+  async function handleTabularImport(
+    dryRun: boolean,
+  ) {
+    await runAction(dryRun ? 'Import preview' : 'Import table', async () => {
+      const response = await apiRequest<TabularImportResponse>(
+        '/api/admin/import-table',
+        {
+          method: 'POST',
+          token: adminSessionToken || undefined,
+          body: {
+            dryRun,
+            source: tabularImportSource,
+            text: tabularImportText,
+          },
+        },
+      );
+      setTabularImportPreview(response);
+      setMessage(
+        dryRun
+          ? `Import preview ready. ${response.parsedRowCount}/${response.inputRowCount} row(s), duplicates=${response.duplicateRowCount}, unknown columns=${response.unknownColumns.length}.`
+          : `Import completed. imported=${response.importedCount}, updated=${response.updatedCount}, duplicates=${response.duplicateRowCount}.`,
+      );
+
+      if (!dryRun) {
+        await loadSnapshot();
+      }
+    });
+  }
+
   async function handleRebuild() {
     await runAction('Rebuild', async () => {
       const response = await apiRequest<{
@@ -349,6 +409,7 @@ export default function App() {
   const rawRows =
     snapshot?.rawRecords.map((record) => [
       record.recordKey,
+      String(record.version),
       record.source,
       truncate(record.receivedAt, 30),
       truncate(toPrettyJson(record.payload), 120),
@@ -537,6 +598,82 @@ export default function App() {
             description="直接验证 ingest、加密构建，以及从已登记子库执行一次手动恢复回拉。"
           />
           <div className="form-grid">
+            <form
+              className="action-form import-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleTabularImport(true);
+              }}
+            >
+              <h3>粘贴表格导入 raw_records</h3>
+              <label>
+                <span>Source</span>
+                <input
+                  value={tabularImportSource}
+                  onChange={(event) => setTabularImportSource(event.target.value)}
+                  placeholder="admin-tabular-import"
+                />
+              </label>
+              <textarea
+                value={tabularImportText}
+                onChange={(event) => setTabularImportText(event.target.value)}
+                spellCheck={false}
+                placeholder="Paste Excel/Sheets cells or a Markdown table here."
+              />
+              <div className="action-row">
+                <button
+                  type="submit"
+                  className="secondary-button"
+                  disabled={busyAction !== null || !adminSessionToken || !tabularImportText.trim()}
+                >
+                  Preview import
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void handleTabularImport(false)}
+                  disabled={busyAction !== null || !adminSessionToken || !tabularImportText.trim()}
+                >
+                  Import rows
+                </button>
+              </div>
+              {tabularImportPreview ? (
+                <div className="import-summary">
+                  <div className="import-stats">
+                    <span>Rows {tabularImportPreview.parsedRowCount}/{tabularImportPreview.inputRowCount}</span>
+                    <span>Duplicates {tabularImportPreview.duplicateRowCount}</span>
+                    <span>Empty {tabularImportPreview.skippedEmptyRowCount}</span>
+                    <span>Unknown {tabularImportPreview.unknownColumns.length}</span>
+                  </div>
+                  {tabularImportPreview.unknownColumns.length > 0 ? (
+                    <p className="warning-text">
+                      Unrecognized columns: {tabularImportPreview.unknownColumns.join(', ')}
+                    </p>
+                  ) : null}
+                  <div className="preview-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>row</th>
+                          <th>recordKey</th>
+                          <th>payload</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tabularImportPreview.previewRecords.slice(0, 5).map((record) => (
+                          <tr key={`${record.rowNumber}-${record.recordKey}`}>
+                            <td>{record.rowNumber}</td>
+                            <td>{truncate(record.recordKey, 40)}</td>
+                            <td>{truncate(toPrettyJson(record.payload), 120)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : null}
+            </form>
+
             <form className="action-form" onSubmit={handleIngestSubmit}>
               <h3>POST /api/ingest</h3>
               <textarea
@@ -575,7 +712,7 @@ export default function App() {
         <section className="table-grid">
           <TableBlock
             title="Raw table"
-            columns={['recordKey', 'source', 'receivedAt', 'payload', 'payloadColumns']}
+            columns={['recordKey', 'version', 'source', 'receivedAt', 'payload', 'payloadColumns']}
             rows={rawRows}
           />
           <TableBlock

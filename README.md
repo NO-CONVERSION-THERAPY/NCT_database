@@ -250,37 +250,107 @@ npx wrangler d1 migrations apply DB --local --persist-to .wrangler/state
 - 对象或数组会序列化成 JSON 字符串写入动态列
 - 原始 JSON 列仍然保留，作为完整数据兜底
 
-## 部署
+## Cloudflare Workers 部署
+
+本文档后续涉及的生产环境示例统一以 `https://api.example.com` 作为占位域名。
+
+### 1. 登录并创建资源
 
 ```bash
-npm run build
-npx wrangler deploy
+npx wrangler login
+npx wrangler whoami
+npm install
+npx wrangler d1 create nct-api-sql
+npx wrangler r2 bucket create nct-api-sql-exports
+npx wrangler r2 bucket create nct-api-sql-exports-preview
 ```
 
-远端 D1 migration：
+把 `wrangler d1 create` 返回的 `database_id` 写回 [`wrangler.toml`](./wrangler.toml)：
+
+```toml
+[[d1_databases]]
+binding = "DB"
+database_name = "nct-api-sql"
+database_id = "替换为线上 D1 database_id"
+migrations_dir = "./migrations"
+```
+
+确认 R2 绑定：
+
+```toml
+[[r2_buckets]]
+binding = "EXPORT_BUCKET"
+bucket_name = "nct-api-sql-exports"
+preview_bucket_name = "nct-api-sql-exports-preview"
+```
+
+### 2. 绑定自定义域名
+
+建议使用 Workers Custom Domains 绑定 `api.example.com`。用 `wrangler.toml` 管理时加入：
+
+```toml
+[[routes]]
+pattern = "api.example.com"
+custom_domain = true
+```
+
+也可以在 Cloudflare Dashboard 的 Worker 设置页中添加 Custom Domain。正式环境如果不想暴露 `*.workers.dev`，把 `workers_dev = false`。
+
+### 3. 设置生产 Secrets
+
+生成母库字段加密密钥：
+
+```bash
+openssl rand -base64 32
+```
+
+生成服务签名私钥：
+
+```bash
+openssl ecparam -name prime256v1 -genkey -noout -out mother-signing.key
+openssl pkcs8 -topk8 -nocrypt -in mother-signing.key -out mother-signing.pkcs8.pem
+npm run key:derive-public -- ./mother-signing.pkcs8.pem > mother-signing.pub.pem
+```
+
+生成服务加密私钥：
+
+```bash
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out mother-encryption.pkcs8.pem
+```
+
+写入 Cloudflare Secrets：
+
+```bash
+npx wrangler secret put ENCRYPTION_KEY
+npx wrangler secret put INGEST_TOKEN
+npx wrangler secret put SERVICE_SIGNING_PRIVATE_KEY
+npx wrangler secret put SERVICE_ENCRYPTION_PRIVATE_KEY
+```
+
+按功能可选：
+
+```bash
+npx wrangler secret put RESEND_API_KEY
+```
+
+说明：
+
+- `ENCRYPTION_KEY` 使用上面生成的 base64 值。
+- `INGEST_TOKEN` 保护 `POST /api/ingest`；留空时只接受 Console 管理员 session。
+- `SERVICE_SIGNING_PRIVATE_KEY` 粘贴 `mother-signing.pkcs8.pem` 内容。
+- `SERVICE_ENCRYPTION_PRIVATE_KEY` 粘贴 `mother-encryption.pkcs8.pem` 内容。
+- `EXPORT_EMAIL_TO` 和 `EXPORT_EMAIL_FROM` 可以放在 `[vars]`，也可以作为 Secrets。
+
+### 4. 远端迁移并部署
 
 ```bash
 npm run db:migrate:remote
+npm run deploy
 ```
 
-### 自定义域名
+`npm run deploy` 会先执行 `vite build`，再通过 `wrangler deploy` 发布 Worker 与管理台静态资产。
 
-部署到 Workers 后，线上服务建议直接绑定你自己的域名，而不是依赖默认的 `*.workers.dev` 地址。
-本文档后续涉及的生产环境示例统一以 `https://api.example.com` 作为占位域名。
-
-常见做法是：
-
-1. 在 Cloudflare 中接入你的站点域名，例如 `example.com`
-2. 部署 Worker
-3. 将 Worker 绑定到一个自定义子域名，例如 `api.example.com`
-4. 让管理台走根路径 `/`，让 API 继续走 `/api/*`
-实际实现中建议改为：
-
-4. 让公开 JSON 走根路径 `/`
-5. 让管理台走 `/Console`
-6. 让 API 继续走 `/api/*`
-
-如果你准备使用 `wrangler.toml` 管理线上路由，需要把当前配置补充为你自己的自定义域名路由，并在正式环境关闭默认 `workers.dev` 暴露。
+部署后首次打开 `https://api.example.com/Console` 设置管理员密码。
 
 ### 生产访问约定
 
