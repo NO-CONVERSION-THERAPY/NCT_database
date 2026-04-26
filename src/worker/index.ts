@@ -18,7 +18,7 @@ import {
   recordSubReport,
   verifySubServiceToken,
 } from './lib/data';
-import { exportSnapshot } from './lib/export';
+import { exportSnapshot, hasExportBucket } from './lib/export';
 import {
   AdminAuthError,
   assertAdminAuth,
@@ -581,6 +581,15 @@ app.post('/api/admin/export-now', async (context) => {
     return authError;
   }
 
+  if (!hasExportBucket(context.env)) {
+    return context.json(
+      {
+        error: 'R2 export bucket is not configured.',
+      },
+      503,
+    );
+  }
+
   const result = await exportSnapshot(context.env);
   return context.json({
     message: 'Export completed.',
@@ -653,7 +662,7 @@ export default {
     env: Env,
     executionCtx: ExecutionContext,
   ) {
-    if (controller.cron === EXPORT_CRON) {
+    if (controller.cron === EXPORT_CRON && hasExportBucket(env)) {
       executionCtx.waitUntil(exportSnapshot(env));
     }
   },

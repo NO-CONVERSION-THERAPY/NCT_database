@@ -2,9 +2,15 @@ name = "nct-database"
 main = "src/worker/index.ts"
 compatibility_date = "2026-04-19"
 workers_dev = true
+routes = [
+  { pattern = "testdb.medicago.top", custom_domain = true }
+]
 
 [observability.logs]
 enabled = true
+
+# Runtime variables are intentionally not declared in [vars].
+# Set them in Cloudflare Variables / Secrets so Git-based deploys do not overwrite them.
 
 [assets]
 directory = "./dist/client"
@@ -14,21 +20,5 @@ run_worker_first = true
 [[d1_databases]]
 binding = "DB"
 database_name = "nct-database"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "f6de668e-9666-4d9d-8854-9dfe25fb17ad"
 migrations_dir = "./migrations"
-
-[[r2_buckets]]
-binding = "EXPORT_BUCKET"
-bucket_name = "nct-database-exports"
-preview_bucket_name = "nct-database-exports-preview"
-
-[vars]
-APP_NAME = "NCT API SQL"
-DEFAULT_ENCRYPT_FIELDS = "name,phone,email,idCard"
-EXPORT_EMAIL_TO = "ops@example.com"
-EXPORT_EMAIL_FROM = "NCT API SQL <exports@example.com>"
-SUB_PULL_MAX_ATTEMPTS = "5"
-SUB_PULL_RETRY_DELAY_MS = "60000"
-
-[triggers]
-crons = ["0 18 * * *"]

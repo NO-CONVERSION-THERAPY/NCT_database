@@ -179,6 +179,14 @@ function findD1Id(list, name) {
 }
 
 function findR2Bucket(list, name) {
+  if (typeof list === 'string') {
+    return list
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .some((line) => line.split(/[^A-Za-z0-9_.-]+/).includes(name));
+  }
+
   return Boolean(getNamedResource(list, name));
 }
 
@@ -192,8 +200,12 @@ function ensureD1Database(configPath, databaseName) {
   }
 
   console.log(`Creating D1 database: ${databaseName}`);
-  const created = readWranglerJson(['d1', 'create', databaseName, '--json', ...configArgs]);
-  const createdId = findD1Id(created, databaseName) || findUuid(created);
+  const created = runWrangler(['d1', 'create', databaseName, ...configArgs]);
+  let createdId = findUuid(created);
+  if (!createdId) {
+    const refreshedList = readWranglerJson(['d1', 'list', '--json', ...configArgs]);
+    createdId = findD1Id(refreshedList, databaseName);
+  }
   if (!createdId) {
     throw new Error(`Failed to read database_id for created D1 database ${databaseName}.`);
   }
@@ -203,7 +215,7 @@ function ensureD1Database(configPath, databaseName) {
 
 function ensureR2Bucket(configPath, bucketName) {
   const configArgs = ['--config', configPath];
-  const existingList = readWranglerJson(['r2', 'bucket', 'list', '--json', ...configArgs]);
+  const existingList = readWranglerJson(['r2', 'bucket', 'list', ...configArgs]);
   if (findR2Bucket(existingList, bucketName)) {
     console.log(`R2 bucket exists: ${bucketName}`);
     return;
