@@ -100,20 +100,11 @@
 按版本对外公布表 2 数据，可选 `mode=full|delta` 和 `currentVersion`。
 
 - `POST /api/admin/export-now`
-手动触发导出。
+手动触发导出。仅在 Cloudflare 账号已启用 R2 且配置 `EXPORT_BUCKET` 绑定后可用。
 
 ### 定时任务
 
-`wrangler.toml` 默认只配置导出 Cron：
-
-```toml
-[triggers]
-crons = ["0 18 * * *"]
-```
-
-其中：
-
-- `0 18 * * *` 表示每天 `18:00 UTC` 触发导出。按 `Asia/Shanghai` 来看，相当于次日 `02:00`
+当前默认部署不配置导出 Cron，因为 R2 导出需要账号先启用 R2 并添加 `EXPORT_BUCKET` 绑定。启用后可再在 `wrangler.toml` 加回导出定时任务，例如每天 `18:00 UTC`。
 
 子库侧会定时上报自身状态并回传待同步表单记录；母库在收到上报、导入新数据或手动 push 时，会向已登记子库推送公开 secure records。
 
@@ -127,7 +118,7 @@ npm install
 
 ### 2. 准备本地 D1
 
-本地开发不需要创建线上 D1/R2。`npm run dev` 前置脚本会准备本地 D1 并执行本地 migrations；线上 D1/R2 由 Cloudflare Workers 部署命令自动创建。
+本地开发不需要创建线上 D1。`npm run dev` 前置脚本会准备本地 D1 并执行本地 migrations；线上 D1 由 Cloudflare Workers 部署命令自动创建。
 
 ### 3. 准备本地密钥和令牌
 
@@ -138,13 +129,14 @@ openssl rand -base64 32
 
 [`./.env.example`](./.env.example) 已按修改必要性排序列出当前项目的全部环境变量。
 本地 Wrangler 仍然读取 `.dev.vars`，线上部署则把同名键写入 Cloudflare Variables / Secrets。
+这些运行变量不会写入 `wrangler.toml`；部署脚本使用 `wrangler deploy --keep-vars`，避免 Git 中的配置覆盖 Dashboard 里的生产变量。
 
 #### 必填环境变量
 
 完整列表见 [`./.env.example`](./.env.example)。这里先标出真正需要优先确认的几项：
 
 - 绝对必填：`ENCRYPTION_KEY`
-- 平台绑定必填但不写进 `.env`：`DB`、`ASSETS`、`EXPORT_BUCKET`，在 [`wrangler.toml`](./wrangler.toml) 中绑定 D1、静态资产和 R2
+- 平台绑定必填但不写进 `.env`：`DB`、`ASSETS`，在 [`wrangler.toml`](./wrangler.toml) 中绑定 D1 和静态资产；`EXPORT_BUCKET` 仅在账号启用 R2 导出时再绑定
 - 管理台密码不再通过环境变量配置；部署后首次打开 `/Console` 设置
 - 按功能必填：`RESEND_API_KEY`、`EXPORT_EMAIL_TO`、`EXPORT_EMAIL_FROM` 仅在你要启用邮件导出时需要
 
@@ -243,7 +235,7 @@ npx wrangler d1 migrations apply DB --local --persist-to .wrangler/state
 
 仅推荐使用 Cloudflare Dashboard 的 Workers Builds 网页部署。本项目的 Worker 项目名使用目录名的 Workers 兼容形式：`nct-database`。
 
-网页部署会读取 [`wrangler.toml`](./wrangler.toml)。部署命令里的 `npm run cf:ensure` 会自动创建 D1 数据库 `nct-database`、R2 bucket `nct-database-exports` 和 `nct-database-exports-preview`，把真实 `database_id` 写入当前构建环境中的 `wrangler.toml`，并执行远端 D1 migrations；不需要再手动创建 D1/R2 或手动填写 `database_id`。
+网页部署会读取 [`wrangler.toml`](./wrangler.toml)。部署命令里的 `npm run cf:ensure` 会自动创建 D1 数据库 `nct-database`、把真实 `database_id` 写入当前构建环境中的 `wrangler.toml`，并执行远端 D1 migrations；不需要再手动创建 D1 或手动填写 `database_id`。`wrangler.toml` 不包含 `[vars]`，生产变量和密钥以 Cloudflare Dashboard 为准。R2 导出需要账号启用 R2 后再额外添加 `EXPORT_BUCKET` 绑定。
 
 ### Workers Builds 填写
 
@@ -263,9 +255,8 @@ npx wrangler d1 migrations apply DB --local --persist-to .wrangler/state
 3. 在 `Settings` -> `Variables and Secrets` 配置生产变量：
    - Variables：`APP_NAME`、`DEFAULT_ENCRYPT_FIELDS`、`EXPORT_EMAIL_TO`、`EXPORT_EMAIL_FROM`、`SUB_AUTH_MAX_FAILURES`、`SUB_REPORT_MIN_INTERVAL_MS`、`SUB_PULL_BATCH_SIZE`、`SUB_PULL_MAX_ATTEMPTS`、`SUB_PULL_RECORD_LIMIT`、`SUB_PULL_RETRY_DELAY_MS`、`SUB_PULL_TIMEOUT_MS`
    - Secrets：`ENCRYPTION_KEY`、`RESEND_API_KEY`
-4. 在 `Settings` -> `Triggers` 确认 Cron 来自 `wrangler.toml`：`0 18 * * *`。
-5. 在 `Settings` -> `Domains & Routes` -> `Add` -> `Custom Domain` 绑定 `api.example.com`。
-6. 推送生产分支触发部署。首次部署时会自动创建 D1/R2、执行 migrations、构建管理台静态资产，然后发布 Worker。
+4. 在 `Settings` -> `Domains & Routes` -> `Add` -> `Custom Domain` 绑定 `api.example.com`。
+5. 推送生产分支触发部署。首次部署时会自动创建 D1、执行 migrations、构建管理台静态资产，然后发布 Worker。
 
 建议生产变量：
 

@@ -1,7 +1,7 @@
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
-  EXPORT_BUCKET: R2Bucket;
+  EXPORT_BUCKET?: R2Bucket;
   APP_NAME?: string;
   DEFAULT_ENCRYPT_FIELDS?: string;
   ENCRYPTION_KEY: string;

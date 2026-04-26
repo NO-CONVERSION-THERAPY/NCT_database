@@ -1,5 +1,5 @@
-import { Suspense, lazy, useEffect, useState } from 'react';
-import type { AdminSnapshot } from '../shared/types';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
+import type { AdminSnapshot, DataSourceType } from '../shared/types';
 import { apiRequest } from './api';
 
 const AnalyticsSection = lazy(() => import('./AnalyticsSection'));
@@ -25,6 +25,7 @@ type TabularImportResponse = {
   inputRowCount: number;
   parsedRowCount: number;
   previewRecords: Array<{
+    dataSourceType: DataSourceType;
     payload: Record<string, unknown>;
     recordKey: string;
     rowNumber: number;
@@ -67,6 +68,11 @@ const sampleTabularImport = [
   '| --- | --- | --- | --- | --- | --- |',
   '| 示例机构 | 示例地址 | 广东 | 广州 | 23.129110, 113.264385 | 示例经历 |',
 ].join('\n');
+
+const importSourceDefaults: Record<DataSourceType, string> = {
+  questionnaire: 'admin-questionnaire-import',
+  batch_query: 'admin-batch-query-import',
+};
 
 function truncate(
   value: string,
@@ -164,6 +170,10 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [adminConfigured, setAdminConfigured] = useState<boolean | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
+  const [initialSetupPassword, setInitialSetupPassword] = useState('');
+  const [initialSetupPasswordConfirm, setInitialSetupPasswordConfirm] =
+    useState('');
+  const initialSetupPasswordRef = useRef<HTMLInputElement>(null);
   const [adminSessionToken, setAdminSessionToken] = useState(
     () => localStorage.getItem(STORAGE_KEYS.adminSession) ?? '',
   );
@@ -172,7 +182,11 @@ export default function App() {
   );
   const [ingestPayload, setIngestPayload] = useState(sampleIngestPayload);
   const [tabularImportText, setTabularImportText] = useState(sampleTabularImport);
-  const [tabularImportSource, setTabularImportSource] = useState('admin-tabular-import');
+  const [tabularImportDataSourceType, setTabularImportDataSourceType] =
+    useState<DataSourceType>('questionnaire');
+  const [tabularImportSource, setTabularImportSource] = useState(
+    importSourceDefaults.questionnaire,
+  );
   const [tabularImportPreview, setTabularImportPreview] =
     useState<TabularImportResponse | null>(null);
 
@@ -215,6 +229,12 @@ export default function App() {
   }, [ingestToken]);
 
   useEffect(() => {
+    if (adminConfigured === false) {
+      initialSetupPasswordRef.current?.focus();
+    }
+  }, [adminConfigured]);
+
+  useEffect(() => {
     async function initializeConsole() {
       setLoading(true);
       setError(null);
@@ -249,6 +269,37 @@ export default function App() {
 
     void initializeConsole();
   }, []);
+
+  async function handleInitialSetupSubmit(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    if (initialSetupPassword !== initialSetupPasswordConfirm) {
+      setError('Password confirmation does not match.');
+      setMessage('Setup admin password failed.');
+      return;
+    }
+
+    await runAction('Setup admin password', async () => {
+      const response = await apiRequest<AdminAuthResponse>(
+        '/api/admin/auth/setup',
+        {
+          method: 'POST',
+          body: {
+            password: initialSetupPassword,
+          },
+        },
+      );
+
+      setAdminConfigured(true);
+      setInitialSetupPassword('');
+      setInitialSetupPasswordConfirm('');
+      setAdminSessionToken(response.sessionToken);
+      setMessage(`Console initialized. Admin session active until ${response.expiresAt}.`);
+      await loadSnapshot(response.sessionToken);
+    });
+  }
 
   async function handleAdminAuthSubmit(
     event: React.FormEvent<HTMLFormElement>,
@@ -339,6 +390,7 @@ export default function App() {
           method: 'POST',
           token: adminSessionToken || undefined,
           body: {
+            dataSourceType: tabularImportDataSourceType,
             dryRun,
             source: tabularImportSource,
             text: tabularImportText,
@@ -356,6 +408,17 @@ export default function App() {
         await loadSnapshot();
       }
     });
+  }
+
+  function handleTabularImportTypeChange(
+    nextType: DataSourceType,
+  ) {
+    setTabularImportDataSourceType(nextType);
+    setTabularImportSource((currentSource) => {
+      const knownDefault = Object.values(importSourceDefaults).includes(currentSource);
+      return knownDefault ? importSourceDefaults[nextType] : currentSource;
+    });
+    setTabularImportPreview(null);
   }
 
   async function handleRebuild() {
@@ -406,10 +469,13 @@ export default function App() {
   }
 
   const overview = snapshot?.overview;
+  const showInitialSetupDialog =
+    adminConfigured === false && !adminSessionToken;
   const rawRows =
     snapshot?.rawRecords.map((record) => [
       record.recordKey,
       String(record.version),
+      record.dataSourceType,
       record.source,
       truncate(record.receivedAt, 30),
       truncate(toPrettyJson(record.payload), 120),
@@ -420,6 +486,7 @@ export default function App() {
     snapshot?.secureRecords.map((record) => [
       record.recordKey,
       String(record.version),
+      record.dataSourceType,
       record.encryptFields.join(', ') || 'none',
       truncate(toPrettyJson(record.publicData), 100),
       truncate(toPrettyJson(record.publicColumns), 100),
@@ -444,6 +511,62 @@ export default function App() {
       <div className="bg-orb orb-a" />
       <div className="bg-orb orb-b" />
       <div className="bg-orb orb-c" />
+
+      {showInitialSetupDialog ? (
+        <div className="modal-backdrop">
+          <section
+            aria-labelledby="initial-setup-title"
+            aria-modal="true"
+            className="setup-dialog glass-panel"
+            role="dialog"
+          >
+            <span className="eyebrow">First Run</span>
+            <h2 id="initial-setup-title">Set admin password</h2>
+            <p>
+              Create the first administrator password to initialize the Console.
+            </p>
+            <form className="setup-form" onSubmit={handleInitialSetupSubmit}>
+              <label>
+                <span>Password</span>
+                <input
+                  autoComplete="new-password"
+                  minLength={12}
+                  onChange={(event) => setInitialSetupPassword(event.target.value)}
+                  placeholder="At least 12 characters"
+                  ref={initialSetupPasswordRef}
+                  type="password"
+                  value={initialSetupPassword}
+                />
+              </label>
+              <label>
+                <span>Confirm password</span>
+                <input
+                  autoComplete="new-password"
+                  minLength={12}
+                  onChange={(event) => setInitialSetupPasswordConfirm(event.target.value)}
+                  placeholder="Repeat password"
+                  type="password"
+                  value={initialSetupPasswordConfirm}
+                />
+              </label>
+              <button
+                className="primary-button"
+                disabled={
+                  busyAction !== null
+                  || !initialSetupPassword
+                  || !initialSetupPasswordConfirm
+                }
+                type="submit"
+              >
+                {busyAction === 'Setup admin password'
+                  ? 'Initializing...'
+                  : 'Initialize Console'}
+              </button>
+            </form>
+            {error ? <p className="dialog-error">{error}</p> : null}
+          </section>
+        </div>
+      ) : null}
 
       <header className="hero glass-panel">
         <div className="hero-copy">
@@ -606,6 +729,22 @@ export default function App() {
               }}
             >
               <h3>粘贴表格导入 raw_records</h3>
+              <div className="segmented-control" role="group" aria-label="Import data source">
+                <button
+                  type="button"
+                  className={tabularImportDataSourceType === 'questionnaire' ? 'active' : ''}
+                  onClick={() => handleTabularImportTypeChange('questionnaire')}
+                >
+                  问卷数据导入
+                </button>
+                <button
+                  type="button"
+                  className={tabularImportDataSourceType === 'batch_query' ? 'active' : ''}
+                  onClick={() => handleTabularImportTypeChange('batch_query')}
+                >
+                  批量查询数据导入
+                </button>
+              </div>
               <label>
                 <span>Source</span>
                 <input
@@ -655,6 +794,7 @@ export default function App() {
                       <thead>
                         <tr>
                           <th>row</th>
+                          <th>type</th>
                           <th>recordKey</th>
                           <th>payload</th>
                         </tr>
@@ -663,6 +803,7 @@ export default function App() {
                         {tabularImportPreview.previewRecords.slice(0, 5).map((record) => (
                           <tr key={`${record.rowNumber}-${record.recordKey}`}>
                             <td>{record.rowNumber}</td>
+                            <td>{record.dataSourceType}</td>
                             <td>{truncate(record.recordKey, 40)}</td>
                             <td>{truncate(toPrettyJson(record.payload), 120)}</td>
                           </tr>
@@ -712,12 +853,12 @@ export default function App() {
         <section className="table-grid">
           <TableBlock
             title="Raw table"
-            columns={['recordKey', 'version', 'source', 'receivedAt', 'payload', 'payloadColumns']}
+            columns={['recordKey', 'version', 'dataSourceType', 'source', 'receivedAt', 'payload', 'payloadColumns']}
             rows={rawRows}
           />
           <TableBlock
             title="Secure table"
-            columns={['recordKey', 'version', 'encryptFields', 'publicData', 'publicColumns', 'encryptedColumns']}
+            columns={['recordKey', 'version', 'dataSourceType', 'encryptFields', 'publicData', 'publicColumns', 'encryptedColumns']}
             rows={secureRows}
           />
           <TableBlock

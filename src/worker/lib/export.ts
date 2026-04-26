@@ -2,6 +2,10 @@ import JSZip from 'jszip';
 import type { AdminSnapshot } from '../../shared/types';
 import { getAdminSnapshot } from './data';
 
+export function hasExportBucket(env: Env): env is Env & { EXPORT_BUCKET: R2Bucket } {
+  return Boolean(env.EXPORT_BUCKET);
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = '';
@@ -143,6 +147,10 @@ export async function exportSnapshot(
   objectKey: string;
   emailStatus: 'skipped' | 'sent';
 }> {
+  if (!hasExportBucket(env)) {
+    throw new Error('EXPORT_BUCKET is not configured. Enable R2 and add the binding before running exports.');
+  }
+
   const snapshot = await getAdminSnapshot(env.DB, {
     rawRecords: undefined,
     secureRecords: undefined,

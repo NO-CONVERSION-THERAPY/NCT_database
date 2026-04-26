@@ -18,7 +18,7 @@ import {
   recordSubReport,
   verifySubServiceToken,
 } from './lib/data';
-import { exportSnapshot } from './lib/export';
+import { exportSnapshot, hasExportBucket } from './lib/export';
 import {
   AdminAuthError,
   assertAdminAuth,
@@ -34,6 +34,7 @@ const ingestSchema = z.object({
   records: z
     .array(
       z.object({
+        dataSourceType: z.enum(['questionnaire', 'batch_query']).optional(),
         recordKey: z.string().optional(),
         source: z.string().optional(),
         encryptFields: z.array(z.string()).optional(),
@@ -149,6 +150,7 @@ function buildFakeFormResults(request: ParsedSubFormRecords) {
 }
 
 const tabularImportSchema = z.object({
+  dataSourceType: z.enum(['questionnaire', 'batch_query']).optional(),
   dryRun: z.boolean().optional(),
   source: z.string().max(120).optional(),
   text: z.string().min(1),
@@ -233,6 +235,14 @@ app.get('/Console', async (context) => {
 });
 
 app.get('/Console/*', async (context) => {
+  return serveConsoleShell(context);
+});
+
+app.get('/console', async (context) => {
+  return serveConsoleShell(context);
+});
+
+app.get('/console/*', async (context) => {
   return serveConsoleShell(context);
 });
 
@@ -519,6 +529,7 @@ app.post('/api/admin/import-table', async (context) => {
   }
 
   const importPlan = await parseTabularImport(parsed.data.text, {
+    dataSourceType: parsed.data.dataSourceType,
     source: parsed.data.source,
   });
 
@@ -579,6 +590,15 @@ app.post('/api/admin/export-now', async (context) => {
   const authError = await assertAdminAuth(context);
   if (authError) {
     return authError;
+  }
+
+  if (!hasExportBucket(context.env)) {
+    return context.json(
+      {
+        error: 'R2 export bucket is not configured.',
+      },
+      503,
+    );
   }
 
   const result = await exportSnapshot(context.env);
@@ -653,7 +673,7 @@ export default {
     env: Env,
     executionCtx: ExecutionContext,
   ) {
-    if (controller.cron === EXPORT_CRON) {
+    if (controller.cron === EXPORT_CRON && hasExportBucket(env)) {
       executionCtx.waitUntil(exportSnapshot(env));
     }
   },
