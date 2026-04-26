@@ -15,16 +15,7 @@ export interface AesGcmEncryptedEnvelope {
   ciphertext: string;
 }
 
-export interface RsaOaepEncryptedEnvelope {
-  algorithm: 'RSA-OAEP-SHA-256+A256GCM';
-  encryptedKey: string;
-  iv: string;
-  ciphertext: string;
-}
-
-export type EncryptedEnvelope =
-  | AesGcmEncryptedEnvelope
-  | RsaOaepEncryptedEnvelope;
+export type EncryptedEnvelope = AesGcmEncryptedEnvelope;
 
 export interface SecureTransferPayload {
   keyVersion: number;
@@ -38,6 +29,7 @@ export interface RawRecord {
   id: string;
   recordKey: string;
   source: string;
+  version: number;
   payload: JsonObject;
   payloadColumns: Record<string, string | null>;
   payloadHash: string;
@@ -102,21 +94,6 @@ export interface SubReportPayload {
   reportedAt: string;
 }
 
-export interface SubBootstrapPayload {
-  service: string;
-  serviceWatermark: string;
-  serviceUrl: string;
-  subServiceEncryptionPublicKey: string;
-  reportedAt: string;
-}
-
-export interface SubBootstrapAcceptedPayload {
-  accepted: boolean;
-  encryptedAuthToken: RsaOaepEncryptedEnvelope;
-  motherServicePublicKey?: string | null;
-  motherServiceEncryptionPublicKey?: string | null;
-}
-
 export interface SubFormRecordPayload {
   databackFingerprint: string;
   databackVersion: number;
@@ -158,6 +135,7 @@ export interface IngestResult {
   rawRecordId: string;
   secureRecordId: string;
   version: number;
+  fingerprint: string;
   updated: boolean;
 }
 
@@ -195,6 +173,7 @@ export interface SubPushPayload {
 }
 
 export interface SubDatabackExportRecord {
+  payload: JsonObject | SecureTransferPayload;
   payloadEncryptionState: 'plain-json' | 'secure-transfer';
   recordKey: string;
   version: number;
@@ -209,7 +188,6 @@ export interface SubDatabackExportFile {
   currentVersion: number | null;
   exportedAt: string;
   totalRecords: number;
-  encryptedRecords: RsaOaepEncryptedEnvelope;
   records: SubDatabackExportRecord[];
 }
 

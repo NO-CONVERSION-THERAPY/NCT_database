@@ -4,7 +4,6 @@ import type { Context } from 'hono';
 import { z } from 'zod';
 import { toJsonObject } from './lib/json';
 import {
-  bootstrapSubServiceAuth,
   ingestSubFormRecords,
   NCT_SUB_SERVICE_WATERMARK,
   getAdminSnapshot,
@@ -20,7 +19,6 @@ import {
   verifySubServiceToken,
 } from './lib/data';
 import { exportSnapshot } from './lib/export';
-import { deriveEncryptionPublicKeyFromPrivateKey } from './lib/crypto';
 import {
   AdminAuthError,
   assertAdminAuth,
@@ -29,11 +27,8 @@ import {
   loginAdminPassword,
   setupAdminPassword,
 } from './lib/adminAuth';
-import {
-  assertToken,
-  deriveSigningPublicKeyFromPrivateKey,
-  signPayloadEnvelope,
-} from './lib/security';
+import { parseTabularImport } from './lib/tabular-import';
+import { readBearerToken } from './lib/service-auth';
 
 const ingestSchema = z.object({
   records: z
@@ -59,14 +54,6 @@ const subReportSchema = z.object({
   reportedAt: z.string().min(1),
 });
 
-const subBootstrapSchema = z.object({
-  service: z.string().min(1),
-  serviceWatermark: z.literal(NCT_SUB_SERVICE_WATERMARK),
-  serviceUrl: z.string().url(),
-  subServiceEncryptionPublicKey: z.string().min(1),
-  reportedAt: z.string().min(1),
-});
-
 const subFormRecordsSchema = z.object({
   serviceUrl: z.string().url(),
   records: z
@@ -84,9 +71,101 @@ const subFormRecordsSchema = z.object({
     .min(1),
 });
 
+type ParsedSubReport = {
+  databackVersion: number | null;
+  reportCount: number;
+  reportedAt: string;
+  service: string;
+  serviceUrl: string;
+  serviceWatermark: typeof NCT_SUB_SERVICE_WATERMARK;
+};
+
+type ParsedSubFormRecords = {
+  records: Array<{
+    databackFingerprint: string;
+    databackVersion: number;
+    recordKey: string;
+  }>;
+  serviceUrl: string;
+};
+
+function fakeIdFromServiceUrl(serviceUrl: string): number {
+  let hash = 2166136261;
+  for (const char of serviceUrl) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return Math.abs(hash % 900000) + 100000;
+}
+
+function buildFakeSubStored(report: ParsedSubReport) {
+  const now = new Date().toISOString();
+
+  return {
+    authFailureCount: 0,
+    authIssuedAt: now,
+    authLastFailureAt: null,
+    authLastSuccessAt: now,
+    blacklistedAt: null,
+    callbackUrl: report.serviceUrl,
+    clientName: report.service,
+    clientVersion: Math.max(0, Number(report.databackVersion ?? 0)),
+    databackVersion: report.databackVersion,
+    entryKind: 'sub-report',
+    id: fakeIdFromServiceUrl(report.serviceUrl),
+    lastError: null,
+    lastPullAt: null,
+    lastPullError: null,
+    lastPullResponseCode: null,
+    lastPullStatus: null,
+    lastPullVersion: Math.max(0, Number(report.databackVersion ?? 0)),
+    lastPushAt: now,
+    lastResponseCode: 202,
+    lastSeenAt: now,
+    lastStatus: 'reported',
+    lastSyncVersion: Math.max(0, Number(report.databackVersion ?? 0)),
+    payload: {
+      databackVersion: report.databackVersion,
+      reportCount: report.reportCount,
+      reportedAt: report.reportedAt,
+      service: report.service,
+      serviceUrl: report.serviceUrl,
+      serviceWatermark: report.serviceWatermark,
+    },
+    reportCount: report.reportCount,
+    reportedAt: report.reportedAt,
+    serviceUrl: report.serviceUrl,
+  };
+}
+
+function buildFakeFormResults(request: ParsedSubFormRecords) {
+  return request.records.slice(0, 1).map((record) => ({
+    databackFingerprint: `accepted:${crypto.randomUUID()}`,
+    motherVersion: Math.max(0, Number(record.databackVersion)),
+    recordKey: `accepted:${crypto.randomUUID()}`,
+    updated: true,
+  }));
+}
+
+const tabularImportSchema = z.object({
+  dryRun: z.boolean().optional(),
+  source: z.string().max(120).optional(),
+  text: z.string().min(1),
+});
+
 const EXPORT_CRON = '0 18 * * *';
 
 const app = new Hono<{ Bindings: Env }>();
+const publicCors = cors({
+  origin: '*',
+  allowHeaders: [
+    'content-type',
+    'authorization',
+    'x-api-token',
+  ],
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+});
 
 function adminAuthErrorResponse(context: Context, error: unknown): Response {
   if (error instanceof AdminAuthError) {
@@ -105,25 +184,8 @@ function adminAuthErrorResponse(context: Context, error: unknown): Response {
 async function assertIngestAuth(
   context: Context<{ Bindings: Env }>,
 ): Promise<Response | null> {
-  const ingestToken = context.env.INGEST_TOKEN?.trim();
-  if (ingestToken) {
-    return assertToken(
-      context,
-      ingestToken,
-      'Ingest',
-    );
-  }
-
+  // External ingest tokens are intentionally disabled; raw writes are limited to the admin console session.
   return assertAdminAuth(context);
-}
-
-function readBearerToken(request: Request): string | null {
-  const authorization = request.headers.get('authorization');
-  if (authorization?.startsWith('Bearer ')) {
-    return authorization.slice('Bearer '.length).trim();
-  }
-
-  return request.headers.get('x-api-token')?.trim() || null;
 }
 
 function getSubAuthMaxFailures(env: Env): number {
@@ -159,24 +221,8 @@ async function serveConsoleShell(context: {
   );
 }
 
-app.use(
-  '/api/*',
-  cors({
-    origin: '*',
-    allowHeaders: [
-      'content-type',
-      'authorization',
-      'x-api-token',
-      'x-nct-auth-alg',
-      'x-nct-key-id',
-      'x-nct-timestamp',
-      'x-nct-nonce',
-      'x-nct-body-sha256',
-      'x-nct-signature',
-    ],
-    allowMethods: ['GET', 'POST', 'OPTIONS'],
-  }),
-);
+app.use('/', publicCors);
+app.use('/api/*', publicCors);
 
 app.get('/', async (context) => {
   return context.json(await getPublicDataset(context.env.DB));
@@ -245,55 +291,7 @@ app.post('/api/sync', async (context) => {
   );
 });
 
-app.post('/api/sub/bootstrap', async (context) => {
-  const payload = await context.req.json();
-  const parsed = subBootstrapSchema.safeParse(payload);
-  if (!parsed.success) {
-    return context.json(
-      {
-        error: 'Invalid sub bootstrap payload.',
-        details: parsed.error.flatten(),
-      },
-      400,
-    );
-  }
-
-  if (!isRecognizedSubService(
-    parsed.data.service,
-    parsed.data.serviceWatermark,
-  )) {
-    return context.json(
-      {
-        error: 'Only nct-api-sql-sub bootstrap requests are accepted.',
-      },
-      403,
-    );
-  }
-
-  try {
-    const bootstrapped = await bootstrapSubServiceAuth(context.env, parsed.data);
-
-    return context.json(
-      await signPayloadEnvelope(context.env, {
-        accepted: true,
-        encryptedAuthToken: bootstrapped.encryptedAuthToken,
-        motherServiceEncryptionPublicKey: bootstrapped.motherServiceEncryptionPublicKey,
-        motherServicePublicKey: bootstrapped.motherServicePublicKey,
-        stored: bootstrapped.stored,
-      }),
-      202,
-    );
-  } catch (error) {
-    return context.json(
-      {
-        error: error instanceof Error ? error.message : 'Sub bootstrap failed.',
-      },
-      403,
-    );
-  }
-});
-
-app.post('/api/sub/report', async (context) => {
+app.post('/api/sub/report', async (context): Promise<Response> => {
   const payload = await context.req.json();
   const parsed = subReportSchema.safeParse(payload);
   if (!parsed.success) {
@@ -319,20 +317,24 @@ app.post('/api/sub/report', async (context) => {
   }
 
   const tokenVerification = await verifySubServiceToken(
-    context.env.DB,
+    context.env,
     parsed.data.serviceUrl,
     readBearerToken(context.req.raw),
     getSubAuthMaxFailures(context.env),
+    {
+      allowUnregistered: true,
+    },
   );
   if (!tokenVerification.ok) {
     return context.json(
       {
-        error: tokenVerification.reason,
+        accepted: true,
+        stored: buildFakeSubStored(parsed.data),
       },
-      tokenVerification.status,
+      202,
     );
   }
-  const verifiedServiceUrl = tokenVerification.stored.serviceUrl?.trim()
+  const verifiedServiceUrl = tokenVerification.stored?.serviceUrl?.trim()
     || parsed.data.serviceUrl;
 
   const throttleState = await getSubReportThrottleState(
@@ -355,26 +357,18 @@ app.post('/api/sub/report', async (context) => {
     ...parsed.data,
     serviceUrl: verifiedServiceUrl,
   });
-  const motherServicePublicKey = context.env.SERVICE_SIGNING_PRIVATE_KEY
-    ? await deriveSigningPublicKeyFromPrivateKey(context.env.SERVICE_SIGNING_PRIVATE_KEY)
-    : null;
-  const motherServiceEncryptionPublicKey = context.env.SERVICE_ENCRYPTION_PRIVATE_KEY
-    ? await deriveEncryptionPublicKeyFromPrivateKey(context.env.SERVICE_ENCRYPTION_PRIVATE_KEY)
-    : null;
   context.executionCtx?.waitUntil(pushSecureRecordsToRegisteredSubs(context.env));
 
   return context.json(
-    await signPayloadEnvelope(context.env, {
+    {
       accepted: true,
-      motherServiceEncryptionPublicKey,
-      motherServicePublicKey,
       stored,
-    }),
+    },
     202,
   );
 });
 
-app.post('/api/sub/form-records', async (context) => {
+app.post('/api/sub/form-records', async (context): Promise<Response> => {
   const payload = await context.req.json();
   const parsed = subFormRecordsSchema.safeParse(payload);
   if (!parsed.success) {
@@ -388,7 +382,7 @@ app.post('/api/sub/form-records', async (context) => {
   }
 
   const tokenVerification = await verifySubServiceToken(
-    context.env.DB,
+    context.env,
     parsed.data.serviceUrl,
     readBearerToken(context.req.raw),
     getSubAuthMaxFailures(context.env),
@@ -396,12 +390,13 @@ app.post('/api/sub/form-records', async (context) => {
   if (!tokenVerification.ok) {
     return context.json(
       {
-        error: tokenVerification.reason,
+        accepted: true,
+        results: buildFakeFormResults(parsed.data),
       },
-      tokenVerification.status,
+      202,
     );
   }
-  const verifiedServiceUrl = tokenVerification.stored.serviceUrl?.trim()
+  const verifiedServiceUrl = tokenVerification.stored?.serviceUrl?.trim()
     || parsed.data.serviceUrl;
 
   const results = await ingestSubFormRecords(context.env, {
@@ -411,20 +406,11 @@ app.post('/api/sub/form-records', async (context) => {
   if (results.some((item) => item.updated)) {
     context.executionCtx?.waitUntil(pushSecureRecordsToRegisteredSubs(context.env));
   }
-  const motherServicePublicKey = context.env.SERVICE_SIGNING_PRIVATE_KEY
-    ? await deriveSigningPublicKeyFromPrivateKey(context.env.SERVICE_SIGNING_PRIVATE_KEY)
-    : null;
-  const motherServiceEncryptionPublicKey = context.env.SERVICE_ENCRYPTION_PRIVATE_KEY
-    ? await deriveEncryptionPublicKeyFromPrivateKey(context.env.SERVICE_ENCRYPTION_PRIVATE_KEY)
-    : null;
-
   return context.json(
-    await signPayloadEnvelope(context.env, {
+    {
       accepted: true,
-      motherServiceEncryptionPublicKey,
-      motherServicePublicKey,
       results,
-    }),
+    },
     202,
   );
 });
@@ -444,7 +430,7 @@ app.get('/api/public/secure-records', async (context) => {
     mode,
   );
 
-  return context.json(await signPayloadEnvelope(context.env, payload));
+  return context.json(payload);
 });
 
 app.get('/api/admin/auth/status', async (context) => {
@@ -511,6 +497,81 @@ app.post('/api/admin/rebuild-secure', async (context) => {
     processed: results.length,
     updated: results.filter((item) => item.updated).length,
     results,
+  });
+});
+
+app.post('/api/admin/import-table', async (context) => {
+  const authError = await assertAdminAuth(context);
+  if (authError) {
+    return authError;
+  }
+
+  const payload = await context.req.json();
+  const parsed = tabularImportSchema.safeParse(payload);
+  if (!parsed.success) {
+    return context.json(
+      {
+        error: 'Invalid import payload.',
+        details: parsed.error.flatten(),
+      },
+      400,
+    );
+  }
+
+  const importPlan = await parseTabularImport(parsed.data.text, {
+    source: parsed.data.source,
+  });
+
+  if (parsed.data.dryRun) {
+    return context.json({
+      dryRun: true,
+      duplicateRowCount: importPlan.duplicateRowCount,
+      inputRowCount: importPlan.inputRowCount,
+      importedCount: 0,
+      parsedRowCount: importPlan.parsedRowCount,
+      previewRecords: importPlan.previewRecords,
+      recognizedColumns: importPlan.recognizedColumns,
+      results: [],
+      skippedEmptyRowCount: importPlan.skippedEmptyRowCount,
+      unknownColumns: importPlan.unknownColumns,
+      updatedCount: 0,
+    });
+  }
+
+  if (importPlan.records.length === 0) {
+    return context.json(
+      {
+        error: 'No importable rows were found.',
+        duplicateRowCount: importPlan.duplicateRowCount,
+        inputRowCount: importPlan.inputRowCount,
+        parsedRowCount: importPlan.parsedRowCount,
+        previewRecords: importPlan.previewRecords,
+        recognizedColumns: importPlan.recognizedColumns,
+        skippedEmptyRowCount: importPlan.skippedEmptyRowCount,
+        unknownColumns: importPlan.unknownColumns,
+      },
+      400,
+    );
+  }
+
+  const results = await ingestRecords(context.env, importPlan.records);
+  if (results.some((item) => item.updated)) {
+    context.executionCtx?.waitUntil(pushSecureRecordsToRegisteredSubs(context.env));
+  }
+
+  return context.json({
+    dryRun: false,
+    duplicateRowCount: importPlan.duplicateRowCount,
+    inputRowCount: importPlan.inputRowCount,
+    importedCount: results.length,
+    message: 'Tabular import completed.',
+    parsedRowCount: importPlan.parsedRowCount,
+    previewRecords: importPlan.previewRecords,
+    recognizedColumns: importPlan.recognizedColumns,
+    results,
+    skippedEmptyRowCount: importPlan.skippedEmptyRowCount,
+    unknownColumns: importPlan.unknownColumns,
+    updatedCount: results.filter((item) => item.updated).length,
   });
 });
 

@@ -45,6 +45,7 @@ const sampleSnapshot: AdminSnapshot = {
       id: 'raw-1',
       recordKey: 'patient-1',
       source: 'hospital-a',
+      version: 7,
       payload: {
         email: 'demo@example.com',
         name: 'Zhang San',
