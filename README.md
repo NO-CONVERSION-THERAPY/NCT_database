@@ -4,8 +4,8 @@
 
 - 接收下游推送数据并写入未加密原始表
 - 根据原始表生成部分列加密的发布表，并维护版本号
-- 记录 `nct-api-sql-sub` 定时上报的域名、版本号和上报次数
-- 供各个 `nct-api-sql-sub` 主动拉取第二张表的发布数据
+- 记录 `NCT_backend` 定时上报的域名、版本号和上报次数
+- 向已登记的 `NCT_backend` 推送公开 secure records
 - 按子库版本从新到旧主动回拉 `nct_databack` 文件，并回灌到主库的 `secure_records` 与 `raw_records`
 - 定时把 D1 三张表打包到 R2，并以邮件附件形式发出
 - 提供 liquid glass 风格的管理台，用于查询、管理、分析、调试
@@ -35,7 +35,7 @@
 3. `downstream_clients`
 作为第三张表，统一记录：
 
-- `nct-api-sql-sub` 上报的 `serviceUrl`、`databackVersion`、`reportCount` 和原始 payload
+- `NCT_backend` 上报的 `serviceUrl`、`databackVersion`、`reportCount` 和原始 payload
 - 主库最近一次成功推送到该子库的版本号与时间
 - 主库最近一次成功回拉该子库的版本号、时间和状态
 
@@ -82,17 +82,15 @@
 下游把数据推送到这里。Worker 会先按 ingest 顶层字段自动扩列并写 `raw_records`，再按加密规则更新 `secure_records`。
 
 - `POST /api/sync`
-已废弃。
-主库不再负责主动推送到子库；`nct-api-sql-sub` 会自行拉取 `GET /api/public/secure-records`。
+已废弃。母库现在通过已登记子库的 `serviceUrl` 主动推送公开 secure records。
 
 - `POST /api/sub/report`
-只接收 `nct-api-sql-sub` 的上报。
+只接收带 `serviceWatermark: "nct-api-sql-sub:v1"` 的 `NCT_backend` 上报。
 收到后会把 `service`、`serviceUrl`、`databackVersion`、`reportCount`、`reportedAt` 存入第三张表。
 同一子库的重复上报会按 `SUB_REPORT_MIN_INTERVAL_MS` 做限频，过快会返回 `429`。
 
 - `POST /api/admin/push-now`
-已废弃。
-保留该路由仅为了给旧调用方返回明确的 `410` 提示，不再触发任何同步动作。
+手动触发一次“主库 -> 已登记子库”的公开 secure records 推送。
 
 - `POST /api/admin/pull-now`
 手动触发一次“主库 <- 已登记子库”的灾备回拉。
@@ -117,7 +115,7 @@ crons = ["0 18 * * *"]
 
 - `0 18 * * *` 表示每天 `18:00 UTC` 触发导出。按 `Asia/Shanghai` 来看，相当于次日 `02:00`
 
-子库侧的同步不再由母库 cron 发起，而是由各自部署的 `nct-api-sql-sub` 在自己的定时任务中主动执行。
+子库侧会定时上报自身状态并回传待同步表单记录；母库在收到上报、导入新数据或手动 push 时，会向已登记子库推送公开 secure records。
 
 ## 本地开发
 
@@ -127,15 +125,9 @@ crons = ["0 18 * * *"]
 npm install
 ```
 
-### 2. 创建 Cloudflare 资源
+### 2. 准备本地 D1
 
-```bash
-npx wrangler d1 create nct-api-sql
-npx wrangler r2 bucket create nct-api-sql-exports
-npx wrangler r2 bucket create nct-api-sql-exports-preview
-```
-
-把创建出来的 `database_id` 和 bucket 名称填回 [`wrangler.toml`](./wrangler.toml)。
+本地开发不需要创建线上 D1/R2。`npm run dev` 前置脚本会准备本地 D1 并执行本地 migrations；线上 D1/R2 由 Cloudflare Workers 部署命令自动创建。
 
 ### 3. 准备本地密钥和令牌
 
@@ -249,110 +241,60 @@ npx wrangler d1 migrations apply DB --local --persist-to .wrangler/state
 
 ## Cloudflare Workers 部署
 
-本文档后续涉及的生产环境示例统一以 `https://api.example.com` 作为占位域名。
+仅推荐使用 Cloudflare Dashboard 的 Workers Builds 网页部署。本项目的 Worker 项目名使用目录名的 Workers 兼容形式：`nct-database`。
 
-### 1. 登录并创建资源
+网页部署会读取 [`wrangler.toml`](./wrangler.toml)。部署命令里的 `npm run cf:ensure` 会自动创建 D1 数据库 `nct-database`、R2 bucket `nct-database-exports` 和 `nct-database-exports-preview`，把真实 `database_id` 写入当前构建环境中的 `wrangler.toml`，并执行远端 D1 migrations；不需要再手动创建 D1/R2 或手动填写 `database_id`。
 
-```bash
-npx wrangler login
-npx wrangler whoami
-npm install
-npx wrangler d1 create nct-api-sql
-npx wrangler r2 bucket create nct-api-sql-exports
-npx wrangler r2 bucket create nct-api-sql-exports-preview
+### Workers Builds 填写
+
+| Cloudflare 页面字段 | 填写值 |
+| --- | --- |
+| Project name | `nct-database` |
+| Production branch | 你的生产分支，例如 `main` |
+| Path / Root directory | 在本仓库部署填 `NCT_database`；如果本项目单独成库填 `/` |
+| Build command | `npm run check` |
+| Deploy command | `npm run deploy` |
+| Non-production branch deploy command | `npm run deploy:preview` |
+
+### 网页端步骤
+
+1. 进入 Cloudflare Dashboard -> `Workers & Pages` -> `Create` -> `Import a repository`。
+2. 选择 Git 仓库后，按上表填写 `Project name`、`Path`、`Build command`、`Deploy command` 和 `Non-production branch deploy command`。
+3. 在 `Settings` -> `Variables and Secrets` 配置生产变量：
+   - Variables：`APP_NAME`、`DEFAULT_ENCRYPT_FIELDS`、`EXPORT_EMAIL_TO`、`EXPORT_EMAIL_FROM`、`SUB_AUTH_MAX_FAILURES`、`SUB_REPORT_MIN_INTERVAL_MS`、`SUB_PULL_BATCH_SIZE`、`SUB_PULL_MAX_ATTEMPTS`、`SUB_PULL_RECORD_LIMIT`、`SUB_PULL_RETRY_DELAY_MS`、`SUB_PULL_TIMEOUT_MS`
+   - Secrets：`ENCRYPTION_KEY`、`RESEND_API_KEY`
+4. 在 `Settings` -> `Triggers` 确认 Cron 来自 `wrangler.toml`：`0 18 * * *`。
+5. 在 `Settings` -> `Domains & Routes` -> `Add` -> `Custom Domain` 绑定 `api.example.com`。
+6. 推送生产分支触发部署。首次部署时会自动创建 D1/R2、执行 migrations、构建管理台静态资产，然后发布 Worker。
+
+建议生产变量：
+
+```text
+APP_NAME=NCT API SQL
+DEFAULT_ENCRYPT_FIELDS=name,phone,email,idCard
+EXPORT_EMAIL_TO=ops@example.com
+EXPORT_EMAIL_FROM=NCT API SQL <exports@example.com>
+SUB_AUTH_MAX_FAILURES=5
+SUB_REPORT_MIN_INTERVAL_MS=5000
+SUB_PULL_BATCH_SIZE=10
+SUB_PULL_MAX_ATTEMPTS=5
+SUB_PULL_RECORD_LIMIT=100
+SUB_PULL_RETRY_DELAY_MS=60000
+SUB_PULL_TIMEOUT_MS=10000
 ```
 
-把 `wrangler d1 create` 返回的 `database_id` 写回 [`wrangler.toml`](./wrangler.toml)：
-
-```toml
-[[d1_databases]]
-binding = "DB"
-database_name = "nct-api-sql"
-database_id = "替换为线上 D1 database_id"
-migrations_dir = "./migrations"
-```
-
-确认 R2 绑定：
-
-```toml
-[[r2_buckets]]
-binding = "EXPORT_BUCKET"
-bucket_name = "nct-api-sql-exports"
-preview_bucket_name = "nct-api-sql-exports-preview"
-```
-
-### 2. 绑定自定义域名
-
-建议使用 Workers Custom Domains 绑定 `api.example.com`。用 `wrangler.toml` 管理时加入：
-
-```toml
-[[routes]]
-pattern = "api.example.com"
-custom_domain = true
-```
-
-也可以在 Cloudflare Dashboard 的 Worker 设置页中添加 Custom Domain。正式环境如果不想暴露 `*.workers.dev`，把 `workers_dev = false`。
-
-### 3. 设置生产 Secrets
-
-生成母库字段加密密钥：
+`ENCRYPTION_KEY` 必须是 base64 编码的 32 字节随机值，可在本地生成后粘贴到 Dashboard Secret：
 
 ```bash
 openssl rand -base64 32
 ```
 
-写入 Cloudflare Secrets：
+部署后首次打开 `https://api.example.com/Console` 设置管理员密码，再检查：
 
-```bash
-npx wrangler secret put ENCRYPTION_KEY
+```text
+https://api.example.com/
+https://api.example.com/api/health
 ```
-
-按功能可选：
-
-```bash
-npx wrangler secret put RESEND_API_KEY
-```
-
-说明：
-
-- `ENCRYPTION_KEY` 使用上面生成的 base64 值。
-- `EXPORT_EMAIL_TO` 和 `EXPORT_EMAIL_FROM` 可以放在 `[vars]`，也可以作为 Secrets。
-
-### 4. 远端迁移并部署
-
-```bash
-npm run db:migrate:remote
-npm run deploy
-```
-
-`npm run deploy` 会先执行 `vite build`，再通过 `wrangler deploy` 发布 Worker 与管理台静态资产。
-
-部署后首次打开 `https://api.example.com/Console` 设置管理员密码。
-
-### 5. Cloudflare Dashboard 网页端部署
-
-如果希望主要在 Cloudflare 网页上完成部署，可以使用 Workers Builds 连接 Git 仓库。网页部署仍会读取本目录的 [`wrangler.toml`](./wrangler.toml)，因此先确认 `name = "nct-api-sql"`、`main = "src/worker/index.ts"`、`[assets]`、Cron、D1 和 R2 绑定都已提交到仓库；不要把示例里的 `database_id = "00000000-0000-0000-0000-000000000000"` 留在线上配置中。
-
-推荐步骤：
-
-1. 在 Cloudflare Dashboard 进入 `Workers & Pages`，创建或选择名为 `nct-api-sql` 的 Worker。
-2. 打开该 Worker 的 `Settings` -> `Builds`，选择 `Connect`，连接 GitHub / GitLab 仓库。
-3. 构建设置按项目位置填写：
-   - Repository root 如果是整个 `nct` 仓库，Root directory 填 `NCT_database`；如果本项目是独立仓库，留空或填 `/`。
-   - Production branch 填实际生产分支，例如 `main`。
-   - Build command 填 `npm run check && npm run build`。
-   - Deploy command 填 `npx wrangler deploy`。
-4. 在 `D1 SQL database` 页面创建数据库 `nct-api-sql`，复制数据库 ID，写回并提交 [`wrangler.toml`](./wrangler.toml) 的 `[[d1_databases]]`；也可以在 Worker 的 `Settings` -> `Bindings` 手动添加 `D1 database` 绑定，变量名必须是 `DB`。
-5. 在 `R2` 页面创建 `nct-api-sql-exports` 和 `nct-api-sql-exports-preview` 两个 bucket，并在 Worker 的 `Settings` -> `Bindings` 确认 `R2 bucket` 绑定变量名为 `EXPORT_BUCKET`。
-6. 在 D1 数据库的 `Console` 中按文件名顺序执行 [`migrations`](./migrations) 里的 SQL。更稳妥的方式仍是在本地执行 `npm run db:migrate:remote`，避免漏跑某个 migration。
-7. 在 Worker 的 `Settings` -> `Variables and Secrets` 中添加生产配置：
-   - Variables：`APP_NAME`、`DEFAULT_ENCRYPT_FIELDS`、`EXPORT_EMAIL_TO`、`EXPORT_EMAIL_FROM`、`SUB_AUTH_MAX_FAILURES`、`SUB_REPORT_MIN_INTERVAL_MS`、`SUB_PULL_BATCH_SIZE`、`SUB_PULL_MAX_ATTEMPTS`、`SUB_PULL_RECORD_LIMIT`、`SUB_PULL_RETRY_DELAY_MS`、`SUB_PULL_TIMEOUT_MS`
-   - Secrets：`ENCRYPTION_KEY`、`RESEND_API_KEY`
-8. 在 `Settings` -> `Triggers` 确认 Cron 触发器包含 `0 18 * * *`。
-9. 在 `Settings` -> `Domains & Routes` -> `Add` -> `Custom Domain` 绑定 `api.example.com`。
-10. 推送一个提交触发 Workers Builds。部署成功后打开 `https://api.example.com/Console` 设置管理员密码，再检查 `https://api.example.com/api/health` 和 `https://api.example.com/`。
-
-Cloudflare 官方参考：[`Workers Builds`](https://developers.cloudflare.com/workers/ci-cd/builds/)、[`Workers Static Assets`](https://developers.cloudflare.com/workers/static-assets/)、[`D1 Dashboard`](https://developers.cloudflare.com/d1/get-started/)、[`R2 Buckets`](https://developers.cloudflare.com/r2/buckets/create-buckets/)、[`Variables and Secrets`](https://developers.cloudflare.com/workers/configuration/secrets/)、[`Custom Domains`](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)。
 
 ### 生产访问约定
 
@@ -446,7 +388,7 @@ curl -X POST https://api.example.com/api/admin/pull-now \
 
 ### 子库上报
 
-`/api/sub/report` 只接受 `nct-api-sql-sub` 的上报，其他 `service` 会被拒绝。
+`/api/sub/report` 只接受带 `serviceWatermark: "nct-api-sql-sub:v1"` 的 `NCT_backend` 上报，其他 `service` 会被拒绝。
 母库识别 `serviceWatermark` 后，会用 `serviceUrl` 派生的 30 秒 HMAC Bearer token 验证请求；首次验证成功会登记该子库。
 
 ```bash

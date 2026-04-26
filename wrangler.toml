@@ -1,4 +1,4 @@
-name = "nct-api-sql"
+name = "nct-database"
 main = "src/worker/index.ts"
 compatibility_date = "2026-04-19"
 workers_dev = true
@@ -13,14 +13,14 @@ run_worker_first = true
 
 [[d1_databases]]
 binding = "DB"
-database_name = "nct-api-sql"
+database_name = "nct-database"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "./migrations"
 
 [[r2_buckets]]
 binding = "EXPORT_BUCKET"
-bucket_name = "nct-api-sql-exports"
-preview_bucket_name = "nct-api-sql-exports-preview"
+bucket_name = "nct-database-exports"
+preview_bucket_name = "nct-database-exports-preview"
 
 [vars]
 APP_NAME = "NCT API SQL"
