@@ -40,6 +40,12 @@ type TabularImportResponse = {
   updatedCount: number;
 };
 
+type MediaRecord = NonNullable<AdminSnapshot['mediaRecords']>[number];
+type MediaSchoolStat = AdminSnapshot['mediaOverview']['schools'][number];
+type MediaSchoolGroup = MediaSchoolStat & {
+  records: MediaRecord[];
+};
+
 const sampleIngestPayload = JSON.stringify(
   {
     records: [
@@ -152,6 +158,226 @@ function TableBlock(props: {
               <tr>
                 <td colSpan={props.columns.length} className="empty-cell">
                   No rows yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function MediaPreviewCell(props: {
+  record: MediaRecord;
+}) {
+  const label = `${props.record.mediaType}/${truncate(props.record.fileName, 28)}`;
+
+  return (
+    <div className="media-review-cell">
+      {props.record.mediaType === 'video' ? (
+        <video
+          className="media-review-preview"
+          controls
+          playsInline
+          preload="metadata"
+          src={props.record.publicUrl}
+        />
+      ) : (
+        <img
+          alt={props.record.fileName}
+          className="media-review-preview"
+          loading="lazy"
+          src={props.record.publicUrl}
+        />
+      )}
+      <a href={props.record.publicUrl} target="_blank" rel="noreferrer" title={props.record.fileName}>
+        {label}
+      </a>
+    </div>
+  );
+}
+
+function buildMediaSchoolGroups(
+  records: MediaRecord[],
+  schools: MediaSchoolStat[],
+): MediaSchoolGroup[] {
+  const groups = new Map<string, MediaSchoolGroup>();
+
+  for (const school of schools) {
+    groups.set(school.schoolNameNorm, {
+      ...school,
+      records: [],
+    });
+  }
+
+  for (const record of records) {
+    const existing = groups.get(record.schoolNameNorm);
+    if (existing) {
+      existing.records.push(record);
+    } else {
+      groups.set(record.schoolNameNorm, {
+        approved: record.status === 'approved' ? 1 : 0,
+        pendingReview: record.status === 'pending_review' ? 1 : 0,
+        r18: record.isR18 ? 1 : 0,
+        records: [record],
+        schoolName: record.schoolName,
+        schoolNameNorm: record.schoolNameNorm,
+        total: 1,
+      });
+    }
+  }
+
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      records: group.records.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    }))
+    .sort((left, right) => {
+      if (right.total !== left.total) {
+        return right.total - left.total;
+      }
+
+      return left.schoolName.localeCompare(right.schoolName, 'zh-CN');
+    });
+}
+
+function MediaSchoolReportPanel(props: {
+  groups: MediaSchoolGroup[];
+}) {
+  return (
+    <section className="glass-panel table-panel">
+      <div className="table-heading">
+        <h3>Media by school</h3>
+        <span>{props.groups.length} schools</span>
+      </div>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>school</th>
+              <th>counts</th>
+              <th>media</th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.groups.length ? (
+              props.groups.map((group) => (
+                <tr key={group.schoolNameNorm}>
+                  <td><span title={group.schoolName}>{truncate(group.schoolName, 52)}</span></td>
+                  <td>
+                    <div className="media-counts">
+                      <span>total {group.total}</span>
+                      <span>pending {group.pendingReview}</span>
+                      <span>approved {group.approved}</span>
+                      <span>r18 {group.r18}</span>
+                    </div>
+                  </td>
+                  <td>
+                    {group.records.length ? (
+                      <div className="media-school-gallery">
+                        {group.records.map((record) => (
+                          <article
+                            className="media-school-item"
+                            key={record.id}
+                            title={record.fileName}
+                          >
+                            {record.mediaType === 'video' ? (
+                              <video controls playsInline preload="metadata" src={record.publicUrl} />
+                            ) : (
+                              <img alt={record.fileName} loading="lazy" src={record.publicUrl} />
+                            )}
+                            <span data-status={record.status}>
+                              {record.status}{record.isR18 ? ' / R18' : ''}
+                            </span>
+                            <a href={record.publicUrl} rel="noreferrer" target="_blank">
+                              {truncate(record.fileName, 24)}
+                            </a>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="empty-cell">No loaded media rows.</span>
+                    )}
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={3} className="empty-cell">
+                  No media schools yet.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function MediaReviewPanel(props: {
+  busyAction: string | null;
+  records: NonNullable<AdminSnapshot['mediaRecords']>;
+  onReview: (id: string, status: 'approved' | 'rejected') => void;
+}) {
+  return (
+    <section className="glass-panel table-panel">
+      <div className="table-heading">
+        <h3>School media review</h3>
+        <span>{props.records.length} rows</span>
+      </div>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>school</th>
+              <th>media</th>
+              <th>tags</th>
+              <th>r18</th>
+              <th>status</th>
+              <th>updatedAt</th>
+              <th>action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.records.length ? (
+              props.records.map((record) => (
+                <tr key={record.id}>
+                  <td><span title={record.schoolName}>{truncate(record.schoolName, 40)}</span></td>
+                  <td>
+                    <MediaPreviewCell record={record} />
+                  </td>
+                  <td>{truncate(record.tags.map((tag) => tag.label).join(', ') || '-', 60)}</td>
+                  <td>{record.isR18 ? 'yes' : 'no'}</td>
+                  <td>{record.status}</td>
+                  <td>{truncate(record.updatedAt, 30)}</td>
+                  <td>
+                    <div className="table-actions">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={props.busyAction !== null || record.status === 'approved'}
+                        onClick={() => props.onReview(record.id, 'approved')}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={props.busyAction !== null || record.status === 'rejected'}
+                        onClick={() => props.onReview(record.id, 'rejected')}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))
+            ) : (
+              <tr>
+                <td colSpan={7} className="empty-cell">
+                  No media records yet.
                 </td>
               </tr>
             )}
@@ -468,9 +694,27 @@ export default function App() {
     });
   }
 
+  async function handleMediaReview(
+    mediaId: string,
+    status: 'approved' | 'rejected',
+  ) {
+    await runAction(`Media ${status}`, async () => {
+      await apiRequest(`/api/admin/media/${encodeURIComponent(mediaId)}/review`, {
+        method: 'POST',
+        token: adminSessionToken || undefined,
+        body: {
+          status,
+        },
+      });
+      setMessage(`Media ${status}.`);
+      await loadSnapshot();
+    });
+  }
+
   const overview = snapshot?.overview;
   const showInitialSetupDialog =
     adminConfigured === false && !adminSessionToken;
+  const mediaOverview = snapshot?.mediaOverview;
   const rawRows =
     snapshot?.rawRecords.map((record) => [
       record.recordKey,
@@ -504,6 +748,16 @@ export default function App() {
       client.reportedAt ?? client.lastSeenAt,
       client.lastStatus,
       client.reportCount === null ? '-' : String(client.reportCount),
+    ]) ?? [];
+  const mediaSchoolGroups = buildMediaSchoolGroups(
+    snapshot?.mediaRecords ?? [],
+    mediaOverview?.schools ?? [],
+  );
+  const mediaTagRows =
+    mediaOverview?.topTags.map((tag) => [
+      tag.label,
+      tag.slug,
+      String(tag.count),
     ]) ?? [];
 
   return (
@@ -698,6 +952,26 @@ export default function App() {
             value={overview?.totals.currentVersion ?? 0}
             helper="以 secure table 的最大版本号为准"
           />
+          <MetricCard
+            label="Pending media"
+            value={mediaOverview?.stats.pendingReview ?? 0}
+            helper="等待审核的学校媒体"
+          />
+          <MetricCard
+            label="Approved media"
+            value={mediaOverview?.stats.approved ?? 0}
+            helper="公开 API 可返回的媒体"
+          />
+          <MetricCard
+            label="R18 media"
+            value={mediaOverview?.stats.r18 ?? 0}
+            helper="已标记 R18 的媒体"
+          />
+          <MetricCard
+            label="Media schools"
+            value={mediaOverview?.stats.schools ?? 0}
+            helper="已提交媒体的学校数"
+          />
         </section>
 
         <Suspense
@@ -848,6 +1122,20 @@ export default function App() {
               </button>
             </div>
           </div>
+        </section>
+
+        <section className="table-grid">
+          <MediaReviewPanel
+            busyAction={busyAction}
+            records={snapshot?.mediaRecords ?? []}
+            onReview={(id, status) => void handleMediaReview(id, status)}
+          />
+          <MediaSchoolReportPanel groups={mediaSchoolGroups} />
+          <TableBlock
+            title="Media tags"
+            columns={['label', 'slug', 'count']}
+            rows={mediaTagRows}
+          />
         </section>
 
         <section className="table-grid">

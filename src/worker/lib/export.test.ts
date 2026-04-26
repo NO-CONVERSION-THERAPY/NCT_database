@@ -14,6 +14,19 @@ vi.mock('./data', () => ({
 import { exportSnapshot } from './export';
 
 const sampleSnapshot: AdminSnapshot = {
+  mediaOverview: {
+    stats: {
+      approved: 0,
+      pendingReview: 0,
+      rejected: 0,
+      r18: 0,
+      schools: 0,
+      total: 0,
+    },
+    schools: [],
+    topTags: [],
+  },
+  mediaRecords: [],
   overview: {
     totals: {
       rawRecords: 1,

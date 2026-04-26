@@ -98,6 +98,7 @@ export interface SubReportPayload {
   databackVersion: number | null;
   reportCount: number;
   reportedAt: string;
+  mediaStats?: SchoolMediaStats;
 }
 
 export interface SubFormRecordPayload {
@@ -123,6 +124,116 @@ export interface SubFormRecordResult {
 export interface SubFormRecordsResponse {
   accepted: boolean;
   results: SubFormRecordResult[];
+}
+
+export type SchoolMediaStatus =
+  | 'pending_review'
+  | 'approved'
+  | 'rejected';
+
+export interface SchoolMediaTag {
+  id: string;
+  slug: string;
+  label: string;
+  isSystem: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SchoolMediaRecord {
+  id: string;
+  sourceServiceUrl: string;
+  sourceMediaId: string;
+  objectKey: string;
+  publicUrl: string;
+  mediaType: 'image' | 'video';
+  contentType: string;
+  byteSize: number;
+  fileName: string;
+  schoolName: string;
+  schoolNameNorm: string;
+  schoolAddress: string;
+  province: string;
+  city: string;
+  county: string;
+  isR18: boolean;
+  status: SchoolMediaStatus;
+  reviewNote: string | null;
+  uploadedAt: string | null;
+  reviewedAt: string | null;
+  sourceUpdatedAt: string;
+  createdAt: string;
+  updatedAt: string;
+  tags: SchoolMediaTag[];
+}
+
+export interface SchoolMediaStats {
+  approved: number;
+  pendingReview: number;
+  rejected: number;
+  r18: number;
+  schools: number;
+  total: number;
+}
+
+export interface SchoolMediaSchoolStatistic {
+  approved: number;
+  pendingReview: number;
+  r18: number;
+  schoolName: string;
+  schoolNameNorm: string;
+  total: number;
+}
+
+export interface SchoolMediaTagStatistic {
+  count: number;
+  label: string;
+  slug: string;
+}
+
+export interface SchoolMediaOverview {
+  stats: SchoolMediaStats;
+  schools: SchoolMediaSchoolStatistic[];
+  topTags: SchoolMediaTagStatistic[];
+}
+
+export interface SubMediaRecordPayload {
+  byteSize: number;
+  city: string;
+  contentType: string;
+  county: string;
+  fileName: string;
+  id: string;
+  isR18: boolean;
+  mediaType: 'image' | 'video';
+  objectKey: string;
+  province: string;
+  publicUrl: string;
+  schoolAddress: string;
+  schoolName: string;
+  schoolNameNorm: string;
+  tags: Array<{
+    label: string;
+    slug: string;
+    isSystem: boolean;
+  }>;
+  updatedAt: string;
+  uploadedAt: string | null;
+}
+
+export interface SubMediaRecordsRequest {
+  serviceUrl: string;
+  records: SubMediaRecordPayload[];
+}
+
+export interface SubMediaRecordResult {
+  mediaId: string;
+  updated: boolean;
+}
+
+export interface SubMediaRecordsResponse {
+  accepted: boolean;
+  results: SubMediaRecordResult[];
 }
 
 export interface IngestRecordInput {
@@ -222,6 +333,8 @@ export interface AnalyticsOverview {
 }
 
 export interface AdminSnapshot {
+  mediaOverview: SchoolMediaOverview;
+  mediaRecords: SchoolMediaRecord[];
   overview: AnalyticsOverview;
   rawRecords: RawRecord[];
   secureRecords: SecureRecord[];

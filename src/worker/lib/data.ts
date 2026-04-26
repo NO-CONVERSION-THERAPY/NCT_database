@@ -12,9 +12,16 @@ import type {
   RawRecord,
   SecureRecord,
   SecureTransferPayload,
+  SchoolMediaOverview,
+  SchoolMediaRecord,
+  SchoolMediaStats,
+  SchoolMediaStatus,
+  SchoolMediaTag,
   SubDatabackExportFile,
   SubFormRecordResult,
   SubFormRecordsRequest,
+  SubMediaRecordResult,
+  SubMediaRecordsRequest,
   SubPushPayload,
   SubPushRecord,
   SubReportPayload,
@@ -106,6 +113,42 @@ type DownstreamClientRow = {
   auth_last_failure_at: string | null;
 };
 
+type MediaTagRow = {
+  id: string;
+  slug: string;
+  label: string;
+  normalized_label: string;
+  is_system: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type SchoolMediaRow = {
+  id: string;
+  source_service_url: string;
+  source_media_id: string;
+  object_key: string;
+  public_url: string;
+  media_type: 'image' | 'video';
+  content_type: string;
+  byte_size: number;
+  file_name: string;
+  school_name: string;
+  school_name_norm: string;
+  school_address: string;
+  province: string;
+  city: string;
+  county: string;
+  is_r18: number;
+  status: SchoolMediaStatus;
+  review_note: string | null;
+  uploaded_at: string | null;
+  reviewed_at: string | null;
+  source_updated_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
 type ColumnAssignment = {
   column: string;
   value: string | null;
@@ -125,6 +168,8 @@ const DATA_SOURCE_TYPES = new Set<DataSourceType>([
   'questionnaire',
   'batch_query',
 ]);
+const R18_TAG_ID = 'tag:r18';
+const R18_TAG_SLUG = 'r18';
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -521,6 +566,192 @@ function mapDownstreamClient(
   };
 }
 
+function normalizeTagLabel(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 40);
+}
+
+function normalizeTagKey(value: string): string {
+  return normalizeTagLabel(value).toLocaleLowerCase('zh-CN');
+}
+
+function normalizeTagSlug(value: string): string {
+  return normalizeTagKey(value)
+    .replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    || `tag-${crypto.randomUUID()}`;
+}
+
+function mapMediaTag(row: MediaTagRow): SchoolMediaTag {
+  return {
+    id: row.id,
+    slug: row.slug,
+    label: row.label,
+    isSystem: Boolean(row.is_system),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function listTagsForMedia(
+  db: D1Database,
+  mediaId: string,
+): Promise<SchoolMediaTag[]> {
+  const result = await db.prepare(
+    `
+      SELECT tags.*
+      FROM media_tags AS tags
+      INNER JOIN school_media_tags AS links
+        ON links.tag_id = tags.id
+      WHERE links.media_id = ?
+      ORDER BY tags.is_system DESC, tags.label ASC
+    `,
+  )
+    .bind(mediaId)
+    .all<MediaTagRow>();
+
+  return (result.results ?? []).map(mapMediaTag);
+}
+
+async function mapSchoolMediaRecord(
+  db: D1Database,
+  row: SchoolMediaRow,
+): Promise<SchoolMediaRecord> {
+  return {
+    id: row.id,
+    sourceServiceUrl: row.source_service_url,
+    sourceMediaId: row.source_media_id,
+    objectKey: row.object_key,
+    publicUrl: row.public_url,
+    mediaType: row.media_type,
+    contentType: row.content_type,
+    byteSize: Number(row.byte_size),
+    fileName: row.file_name,
+    schoolName: row.school_name,
+    schoolNameNorm: row.school_name_norm,
+    schoolAddress: row.school_address,
+    province: row.province,
+    city: row.city,
+    county: row.county,
+    isR18: Boolean(row.is_r18),
+    status: row.status,
+    reviewNote: row.review_note,
+    uploadedAt: row.uploaded_at,
+    reviewedAt: row.reviewed_at,
+    sourceUpdatedAt: row.source_updated_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    tags: await listTagsForMedia(db, row.id),
+  };
+}
+
+async function ensureR18Tag(db: D1Database): Promise<SchoolMediaTag> {
+  const now = nowIso();
+  await db.prepare(
+    `
+      INSERT INTO media_tags (
+        id,
+        slug,
+        label,
+        normalized_label,
+        is_system,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(slug) DO UPDATE SET
+        label = excluded.label,
+        normalized_label = excluded.normalized_label,
+        is_system = 1,
+        updated_at = excluded.updated_at
+    `,
+  )
+    .bind(R18_TAG_ID, R18_TAG_SLUG, 'R18', 'r18', now, now)
+    .run();
+
+  const tag = await db.prepare(
+    `
+      SELECT *
+      FROM media_tags
+      WHERE slug = ?
+      LIMIT 1
+    `,
+  )
+    .bind(R18_TAG_SLUG)
+    .first<MediaTagRow>();
+
+  if (!tag) {
+    throw new Error('Failed to initialize R18 media tag.');
+  }
+
+  return mapMediaTag(tag);
+}
+
+async function ensureMediaTag(
+  db: D1Database,
+  input: {
+    isSystem?: boolean;
+    label: string;
+    slug?: string;
+  },
+): Promise<SchoolMediaTag> {
+  const label = normalizeTagLabel(input.label);
+  if (!label) {
+    throw new Error('Media tag is empty.');
+  }
+
+  if (normalizeTagKey(label) === R18_TAG_SLUG || input.slug === R18_TAG_SLUG) {
+    return ensureR18Tag(db);
+  }
+
+  const normalizedLabel = normalizeTagKey(label);
+  const slug = normalizeTagSlug(label);
+  const now = nowIso();
+  await db.prepare(
+    `
+      INSERT INTO media_tags (
+        id,
+        slug,
+        label,
+        normalized_label,
+        is_system,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(normalized_label) DO UPDATE SET
+        label = excluded.label,
+        updated_at = excluded.updated_at
+    `,
+  )
+    .bind(
+      `tag:${slug}`,
+      slug,
+      label,
+      normalizedLabel,
+      input.isSystem ? 1 : 0,
+      now,
+      now,
+    )
+    .run();
+
+  const tag = await db.prepare(
+    `
+      SELECT *
+      FROM media_tags
+      WHERE normalized_label = ?
+      LIMIT 1
+    `,
+  )
+    .bind(normalizedLabel)
+    .first<MediaTagRow>();
+
+  if (!tag) {
+    throw new Error('Failed to store media tag.');
+  }
+
+  return mapMediaTag(tag);
+}
+
 function buildSubReportKey(serviceUrl: string): string {
   return `sub-report:${serviceUrl}`;
 }
@@ -847,6 +1078,163 @@ export async function ingestSubFormRecords(
       motherVersion: ingested.version,
       recordKey: record.recordKey,
       updated: ingested.updated,
+    });
+  }
+
+  return results;
+}
+
+export async function ingestSubMediaRecords(
+  env: Env,
+  request: SubMediaRecordsRequest,
+): Promise<SubMediaRecordResult[]> {
+  const results: SubMediaRecordResult[] = [];
+
+  for (const record of request.records) {
+    const now = nowIso();
+    const existing = await env.DB.prepare(
+      `
+        SELECT *
+        FROM school_media
+        WHERE source_service_url = ?
+          AND source_media_id = ?
+        LIMIT 1
+      `,
+    )
+      .bind(request.serviceUrl, record.id)
+      .first<SchoolMediaRow>();
+    const mediaId = existing?.id ?? crypto.randomUUID();
+    const previousFingerprint = existing
+      ? await sha256(stableStringify({
+          byteSize: existing.byte_size,
+          city: existing.city,
+          contentType: existing.content_type,
+          county: existing.county,
+          fileName: existing.file_name,
+          isR18: Boolean(existing.is_r18),
+          objectKey: existing.object_key,
+          province: existing.province,
+          publicUrl: existing.public_url,
+          schoolAddress: existing.school_address,
+          schoolName: existing.school_name,
+          schoolNameNorm: existing.school_name_norm,
+          sourceUpdatedAt: existing.source_updated_at,
+          uploadedAt: existing.uploaded_at,
+        }))
+      : '';
+    const nextFingerprint = await sha256(stableStringify(record));
+    const updated = !existing || previousFingerprint !== nextFingerprint;
+
+    await env.DB.prepare(
+      `
+        INSERT INTO school_media (
+          id,
+          source_service_url,
+          source_media_id,
+          object_key,
+          public_url,
+          media_type,
+          content_type,
+          byte_size,
+          file_name,
+          school_name,
+          school_name_norm,
+          school_address,
+          province,
+          city,
+          county,
+          is_r18,
+          status,
+          uploaded_at,
+          source_updated_at,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?)
+        ON CONFLICT(source_service_url, source_media_id) DO UPDATE SET
+          object_key = excluded.object_key,
+          public_url = excluded.public_url,
+          media_type = excluded.media_type,
+          content_type = excluded.content_type,
+          byte_size = excluded.byte_size,
+          file_name = excluded.file_name,
+          school_name = excluded.school_name,
+          school_name_norm = excluded.school_name_norm,
+          school_address = excluded.school_address,
+          province = excluded.province,
+          city = excluded.city,
+          county = excluded.county,
+          is_r18 = excluded.is_r18,
+          uploaded_at = excluded.uploaded_at,
+          source_updated_at = excluded.source_updated_at,
+          updated_at = excluded.updated_at
+      `,
+    )
+      .bind(
+        mediaId,
+        request.serviceUrl,
+        record.id,
+        record.objectKey,
+        record.publicUrl,
+        record.mediaType,
+        record.contentType,
+        Math.max(0, Math.trunc(Number(record.byteSize))),
+        record.fileName,
+        record.schoolName,
+        record.schoolNameNorm,
+        record.schoolAddress,
+        record.province,
+        record.city,
+        record.county,
+        record.isR18 ? 1 : 0,
+        record.uploadedAt,
+        record.updatedAt,
+        now,
+        now,
+      )
+      .run();
+
+    await env.DB.prepare(
+      `
+        DELETE FROM school_media_tags
+        WHERE media_id = ?
+      `,
+    )
+      .bind(mediaId)
+      .run();
+
+    const tags = [];
+    if (record.isR18) {
+      tags.push(await ensureR18Tag(env.DB));
+    }
+    for (const tag of record.tags) {
+      const stored = await ensureMediaTag(env.DB, {
+        isSystem: tag.isSystem,
+        label: tag.label,
+        slug: tag.slug,
+      });
+      if (!tags.some((item) => item.id === stored.id)) {
+        tags.push(stored);
+      }
+    }
+
+    for (const tag of tags) {
+      await env.DB.prepare(
+        `
+          INSERT OR IGNORE INTO school_media_tags (
+            media_id,
+            tag_id
+          )
+          VALUES (?, ?)
+        `,
+      )
+        .bind(mediaId, tag.id)
+        .run();
+    }
+
+    results.push({
+      mediaId: record.id,
+      updated,
     });
   }
 
@@ -2084,6 +2472,11 @@ export async function recordSubReport(
     serviceWatermark: report.serviceWatermark,
     serviceUrl: report.serviceUrl,
     databackVersion: report.databackVersion,
+    ...(report.mediaStats
+      ? {
+          mediaStats: report.mediaStats as unknown as JsonValue,
+        }
+      : {}),
     reportCount: report.reportCount,
     reportedAt: report.reportedAt,
   };
@@ -2829,6 +3222,182 @@ export async function getOverview(
   };
 }
 
+export async function listSchoolMediaRecords(
+  db: D1Database,
+  options: {
+    includeR18?: boolean;
+    limit?: number;
+    publicOnly?: boolean;
+    schoolNameNorm?: string;
+    status?: SchoolMediaStatus;
+  } = {},
+): Promise<SchoolMediaRecord[]> {
+  const where: string[] = [];
+  const params: Array<number | string> = [];
+
+  if (options.publicOnly) {
+    where.push("status = 'approved'");
+  } else if (options.status) {
+    where.push('status = ?');
+    params.push(options.status);
+  }
+  if (!options.includeR18) {
+    where.push('is_r18 = 0');
+  }
+  if (options.schoolNameNorm?.trim()) {
+    where.push('school_name_norm = ?');
+    params.push(options.schoolNameNorm.trim());
+  }
+
+  const sql = `
+    SELECT *
+    FROM school_media
+    ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `;
+  const result = await db.prepare(sql)
+    .bind(...params, Math.max(1, Math.min(options.limit ?? 200, 500)))
+    .all<SchoolMediaRow>();
+  const records = [];
+
+  for (const row of result.results ?? []) {
+    records.push(await mapSchoolMediaRecord(db, row));
+  }
+
+  return records;
+}
+
+export async function reviewSchoolMediaRecord(
+  db: D1Database,
+  input: {
+    id: string;
+    note?: string;
+    status: Extract<SchoolMediaStatus, 'approved' | 'rejected'>;
+  },
+): Promise<SchoolMediaRecord> {
+  const reviewedAt = nowIso();
+  await db.prepare(
+    `
+      UPDATE school_media
+      SET status = ?,
+          review_note = ?,
+          reviewed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `,
+  )
+    .bind(
+      input.status,
+      input.note?.trim() || null,
+      reviewedAt,
+      reviewedAt,
+      input.id,
+    )
+    .run();
+
+  const row = await db.prepare(
+    `
+      SELECT *
+      FROM school_media
+      WHERE id = ?
+      LIMIT 1
+    `,
+  )
+    .bind(input.id)
+    .first<SchoolMediaRow>();
+  if (!row) {
+    throw new Error('Media record was not found.');
+  }
+
+  return mapSchoolMediaRecord(db, row);
+}
+
+export async function getSchoolMediaOverview(
+  db: D1Database,
+): Promise<SchoolMediaOverview> {
+  const [statsRow, schools, topTags] = await Promise.all([
+    db.prepare(
+      `
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'pending_review' THEN 1 ELSE 0 END) AS pendingReview,
+          SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved,
+          SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+          SUM(CASE WHEN is_r18 = 1 THEN 1 ELSE 0 END) AS r18,
+          COUNT(DISTINCT school_name_norm) AS schools
+        FROM school_media
+      `,
+    ).first<SchoolMediaStats>(),
+    db.prepare(
+      `
+        SELECT
+          school_name AS schoolName,
+          school_name_norm AS schoolNameNorm,
+          COUNT(*) AS total,
+          SUM(CASE WHEN status = 'pending_review' THEN 1 ELSE 0 END) AS pendingReview,
+          SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved,
+          SUM(CASE WHEN is_r18 = 1 THEN 1 ELSE 0 END) AS r18
+        FROM school_media
+        GROUP BY school_name_norm
+        ORDER BY total DESC, school_name ASC
+        LIMIT 20
+      `,
+    ).all<{
+      approved: number;
+      pendingReview: number;
+      r18: number;
+      schoolName: string;
+      schoolNameNorm: string;
+      total: number;
+    }>(),
+    db.prepare(
+      `
+        SELECT
+          tags.label,
+          tags.slug,
+          COUNT(*) AS count
+        FROM media_tags AS tags
+        INNER JOIN school_media_tags AS links
+          ON links.tag_id = tags.id
+        INNER JOIN school_media AS media
+          ON media.id = links.media_id
+        GROUP BY tags.slug
+        ORDER BY count DESC, tags.label ASC
+        LIMIT 20
+      `,
+    ).all<{
+      count: number;
+      label: string;
+      slug: string;
+    }>(),
+  ]);
+
+  return {
+    stats: {
+      approved: Number(statsRow?.approved ?? 0),
+      pendingReview: Number(statsRow?.pendingReview ?? 0),
+      rejected: Number(statsRow?.rejected ?? 0),
+      r18: Number(statsRow?.r18 ?? 0),
+      schools: Number(statsRow?.schools ?? 0),
+      total: Number(statsRow?.total ?? 0),
+    },
+    schools: (schools.results ?? []).map((row) => ({
+      approved: Number(row.approved ?? 0),
+      pendingReview: Number(row.pendingReview ?? 0),
+      r18: Number(row.r18 ?? 0),
+      schoolName: row.schoolName,
+      schoolNameNorm: row.schoolNameNorm,
+      total: Number(row.total ?? 0),
+    })),
+    topTags: (topTags.results ?? []).map((row) => ({
+      count: Number(row.count ?? 0),
+      label: row.label,
+      slug: row.slug,
+    })),
+  };
+}
+
 export async function getPublicDataset(
   db: D1Database,
 ): Promise<PublicDatasetResponse> {
@@ -2885,24 +3454,33 @@ export async function getPublicDataset(
 export async function getAdminSnapshot(
   db: D1Database,
   limits: {
+    mediaRecords?: number;
     rawRecords?: number;
     secureRecords?: number;
     downstreamClients?: number;
   } = {
+    mediaRecords: 200,
     rawRecords: 200,
     secureRecords: 200,
     downstreamClients: 200,
   },
 ): Promise<AdminSnapshot> {
-  const [overview, rawRecords, secureRecords, downstreamClients] =
+  const [overview, mediaOverview, mediaRecords, rawRecords, secureRecords, downstreamClients] =
     await Promise.all([
       getOverview(db),
+      getSchoolMediaOverview(db),
+      listSchoolMediaRecords(db, {
+        includeR18: true,
+        limit: limits.mediaRecords,
+      }),
       listRawRecords(db, limits.rawRecords),
       listSecureRecords(db, limits.secureRecords),
       listDownstreamClients(db, limits.downstreamClients),
     ]);
 
   return {
+    mediaOverview,
+    mediaRecords,
     overview,
     rawRecords,
     secureRecords,

@@ -3,18 +3,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const {
   assertAdminAuthMock,
   ingestSubFormRecordsMock,
+  ingestSubMediaRecordsMock,
   ingestRecordsMock,
   isRecognizedSubServiceMock,
+  listSchoolMediaRecordsMock,
   pushSecureRecordsToRegisteredSubsMock,
   recordSubReportMock,
+  reviewSchoolMediaRecordMock,
   verifySubServiceTokenMock,
 } = vi.hoisted(() => ({
   assertAdminAuthMock: vi.fn(),
   ingestSubFormRecordsMock: vi.fn(),
+  ingestSubMediaRecordsMock: vi.fn(),
   ingestRecordsMock: vi.fn(),
   isRecognizedSubServiceMock: vi.fn(),
+  listSchoolMediaRecordsMock: vi.fn(),
   pushSecureRecordsToRegisteredSubsMock: vi.fn(),
   recordSubReportMock: vi.fn(),
+  reviewSchoolMediaRecordMock: vi.fn(),
   verifySubServiceTokenMock: vi.fn(),
 }));
 
@@ -26,11 +32,14 @@ vi.mock('./lib/data', () => ({
   getSubReportThrottleState: vi.fn(),
   ingestRecords: ingestRecordsMock,
   ingestSubFormRecords: ingestSubFormRecordsMock,
+  ingestSubMediaRecords: ingestSubMediaRecordsMock,
   isRecognizedSubService: isRecognizedSubServiceMock,
+  listSchoolMediaRecords: listSchoolMediaRecordsMock,
   pullDatabackFromRegisteredSubs: vi.fn(),
   pushSecureRecordsToRegisteredSubs: pushSecureRecordsToRegisteredSubsMock,
   rebuildSecureRecords: vi.fn(),
   recordSubReport: recordSubReportMock,
+  reviewSchoolMediaRecord: reviewSchoolMediaRecordMock,
   verifySubServiceToken: verifySubServiceTokenMock,
 }));
 

@@ -11,11 +11,14 @@ import {
   getPublicDataset,
   getPublishedPayload,
   ingestRecords,
+  ingestSubMediaRecords,
   isRecognizedSubService,
+  listSchoolMediaRecords,
   pullDatabackFromRegisteredSubs,
   pushSecureRecordsToRegisteredSubs,
   rebuildSecureRecords,
   recordSubReport,
+  reviewSchoolMediaRecord,
   verifySubServiceToken,
 } from './lib/data';
 import { exportSnapshot, hasExportBucket } from './lib/export';
@@ -51,6 +54,14 @@ const subReportSchema = z.object({
   serviceWatermark: z.literal(NCT_SUB_SERVICE_WATERMARK),
   serviceUrl: z.string().url(),
   databackVersion: z.number().int().min(0).nullable(),
+  mediaStats: z.object({
+    approved: z.number().int().min(0),
+    pendingReview: z.number().int().min(0),
+    rejected: z.number().int().min(0),
+    r18: z.number().int().min(0),
+    schools: z.number().int().min(0),
+    total: z.number().int().min(0),
+  }).optional(),
   reportCount: z.number().int().min(1),
   reportedAt: z.string().min(1),
 });
@@ -72,8 +83,54 @@ const subFormRecordsSchema = z.object({
     .min(1),
 });
 
+const subMediaRecordsSchema = z.object({
+  serviceUrl: z.string().url(),
+  records: z
+    .array(
+      z.object({
+        byteSize: z.number().int().min(1),
+        city: z.string(),
+        contentType: z.string().min(1),
+        county: z.string(),
+        fileName: z.string().min(1),
+        id: z.string().min(1),
+        isR18: z.boolean(),
+        mediaType: z.enum(['image', 'video']),
+        objectKey: z.string().min(1),
+        province: z.string(),
+        publicUrl: z.string().url(),
+        schoolAddress: z.string(),
+        schoolName: z.string().min(1),
+        schoolNameNorm: z.string().min(1),
+        tags: z.array(
+          z.object({
+            label: z.string().min(1),
+            slug: z.string().min(1),
+            isSystem: z.boolean(),
+          }),
+        ),
+        updatedAt: z.string().min(1),
+        uploadedAt: z.string().nullable(),
+      }),
+    )
+    .min(1),
+});
+
+const mediaReviewSchema = z.object({
+  note: z.string().max(1000).optional(),
+  status: z.enum(['approved', 'rejected']),
+});
+
 type ParsedSubReport = {
   databackVersion: number | null;
+  mediaStats?: {
+    approved: number;
+    pendingReview: number;
+    rejected: number;
+    r18: number;
+    schools: number;
+    total: number;
+  };
   reportCount: number;
   reportedAt: string;
   service: string;
@@ -128,6 +185,7 @@ function buildFakeSubStored(report: ParsedSubReport) {
     lastSyncVersion: Math.max(0, Number(report.databackVersion ?? 0)),
     payload: {
       databackVersion: report.databackVersion,
+      mediaStats: report.mediaStats,
       reportCount: report.reportCount,
       reportedAt: report.reportedAt,
       service: report.service,
@@ -145,6 +203,17 @@ function buildFakeFormResults(request: ParsedSubFormRecords) {
     databackFingerprint: `accepted:${crypto.randomUUID()}`,
     motherVersion: Math.max(0, Number(record.databackVersion)),
     recordKey: `accepted:${crypto.randomUUID()}`,
+    updated: true,
+  }));
+}
+
+function buildFakeMediaResults(request: {
+  records: Array<{
+    id: string;
+  }>;
+}) {
+  return request.records.slice(0, 1).map((record) => ({
+    mediaId: record.id,
     updated: true,
   }));
 }
@@ -425,6 +494,51 @@ app.post('/api/sub/form-records', async (context): Promise<Response> => {
   );
 });
 
+app.post('/api/sub/media-records', async (context): Promise<Response> => {
+  const payload = await context.req.json();
+  const parsed = subMediaRecordsSchema.safeParse(payload);
+  if (!parsed.success) {
+    return context.json(
+      {
+        error: 'Invalid sub media sync payload.',
+        details: parsed.error.flatten(),
+      },
+      400,
+    );
+  }
+
+  const tokenVerification = await verifySubServiceToken(
+    context.env,
+    parsed.data.serviceUrl,
+    readBearerToken(context.req.raw),
+    getSubAuthMaxFailures(context.env),
+  );
+  if (!tokenVerification.ok) {
+    return context.json(
+      {
+        accepted: true,
+        results: buildFakeMediaResults(parsed.data),
+      },
+      202,
+    );
+  }
+
+  const verifiedServiceUrl = tokenVerification.stored?.serviceUrl?.trim()
+    || parsed.data.serviceUrl;
+  const results = await ingestSubMediaRecords(context.env, {
+    ...parsed.data,
+    serviceUrl: verifiedServiceUrl,
+  });
+
+  return context.json(
+    {
+      accepted: true,
+      results,
+    },
+    202,
+  );
+});
+
 app.get('/api/public/secure-records', async (context) => {
   const currentVersion = Number(
     context.req.query('currentVersion') ?? '0',
@@ -441,6 +555,24 @@ app.get('/api/public/secure-records', async (context) => {
   );
 
   return context.json(payload);
+});
+
+app.get('/api/public/media', async (context) => {
+  const includeR18 = context.req.query('includeR18') === 'true';
+  const schoolNameNorm = context.req.query('schoolNameNorm')?.trim();
+  const limit = Math.max(
+    1,
+    Math.min(Number(context.req.query('limit') ?? '100'), 200),
+  );
+
+  return context.json({
+    media: await listSchoolMediaRecords(context.env.DB, {
+      includeR18,
+      limit,
+      publicOnly: true,
+      schoolNameNorm,
+    }),
+  });
 });
 
 app.get('/api/admin/auth/status', async (context) => {
@@ -489,6 +621,33 @@ app.get('/api/admin/snapshot', async (context) => {
   }
 
   return context.json(await getAdminSnapshot(context.env.DB));
+});
+
+app.post('/api/admin/media/:id/review', async (context) => {
+  const authError = await assertAdminAuth(context);
+  if (authError) {
+    return authError;
+  }
+
+  const payload = await context.req.json();
+  const parsed = mediaReviewSchema.safeParse(payload);
+  if (!parsed.success) {
+    return context.json(
+      {
+        error: 'Invalid media review payload.',
+        details: parsed.error.flatten(),
+      },
+      400,
+    );
+  }
+
+  return context.json({
+    media: await reviewSchoolMediaRecord(context.env.DB, {
+      id: context.req.param('id'),
+      note: parsed.data.note,
+      status: parsed.data.status,
+    }),
+  });
 });
 
 app.post('/api/admin/rebuild-secure', async (context) => {
