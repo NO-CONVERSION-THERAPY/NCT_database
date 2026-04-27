@@ -94,7 +94,7 @@ const subMediaRecordsSchema = z.object({
         county: z.string(),
         fileName: z.string().min(1),
         id: z.string().min(1),
-        isR18: z.boolean(),
+        isR18: z.boolean().optional(),
         mediaType: z.enum(['image', 'video']),
         objectKey: z.string().min(1),
         province: z.string(),
@@ -558,6 +558,7 @@ app.get('/api/public/secure-records', async (context) => {
 });
 
 app.get('/api/public/media', async (context) => {
+  const tagSlug = context.req.query('tagSlug')?.trim() || context.req.query('tag')?.trim();
   const includeR18 = context.req.query('includeR18') === 'true';
   const schoolNameNorm = context.req.query('schoolNameNorm')?.trim();
   const limit = Math.max(
@@ -571,6 +572,7 @@ app.get('/api/public/media', async (context) => {
       limit,
       publicOnly: true,
       schoolNameNorm,
+      tagSlug,
     }),
   });
 });

@@ -204,7 +204,7 @@ export interface SubMediaRecordPayload {
   county: string;
   fileName: string;
   id: string;
-  isR18: boolean;
+  isR18?: boolean;
   mediaType: 'image' | 'video';
   objectKey: string;
   province: string;

@@ -581,6 +581,18 @@ function normalizeTagSlug(value: string): string {
     || `tag-${crypto.randomUUID()}`;
 }
 
+function mediaTagsContainR18(
+  tags: Array<{
+    label: string;
+    slug?: string;
+  }>,
+): boolean {
+  return tags.some((tag) => (
+    (tag.slug ? normalizeTagSlug(tag.slug) : '') === R18_TAG_SLUG
+    || normalizeTagKey(tag.label) === R18_TAG_SLUG
+  ));
+}
+
 function mapMediaTag(row: MediaTagRow): SchoolMediaTag {
   return {
     id: row.id,
@@ -1092,6 +1104,7 @@ export async function ingestSubMediaRecords(
 
   for (const record of request.records) {
     const now = nowIso();
+    const recordIsR18 = mediaTagsContainR18(record.tags);
     const existing = await env.DB.prepare(
       `
         SELECT *
@@ -1122,7 +1135,10 @@ export async function ingestSubMediaRecords(
           uploadedAt: existing.uploaded_at,
         }))
       : '';
-    const nextFingerprint = await sha256(stableStringify(record));
+    const nextFingerprint = await sha256(stableStringify({
+      ...record,
+      isR18: recordIsR18,
+    }));
     const updated = !existing || previousFingerprint !== nextFingerprint;
 
     await env.DB.prepare(
@@ -1186,7 +1202,7 @@ export async function ingestSubMediaRecords(
         record.province,
         record.city,
         record.county,
-        record.isR18 ? 1 : 0,
+        recordIsR18 ? 1 : 0,
         record.uploadedAt,
         record.updatedAt,
         now,
@@ -1204,7 +1220,7 @@ export async function ingestSubMediaRecords(
       .run();
 
     const tags = [];
-    if (record.isR18) {
+    if (recordIsR18) {
       tags.push(await ensureR18Tag(env.DB));
     }
     for (const tag of record.tags) {
@@ -3230,10 +3246,14 @@ export async function listSchoolMediaRecords(
     publicOnly?: boolean;
     schoolNameNorm?: string;
     status?: SchoolMediaStatus;
+    tagSlug?: string;
   } = {},
 ): Promise<SchoolMediaRecord[]> {
   const where: string[] = [];
   const params: Array<number | string> = [];
+  const tagSlug = options.tagSlug?.trim()
+    ? normalizeTagSlug(options.tagSlug)
+    : '';
 
   if (options.publicOnly) {
     where.push("status = 'approved'");
@@ -3241,12 +3261,35 @@ export async function listSchoolMediaRecords(
     where.push('status = ?');
     params.push(options.status);
   }
-  if (!options.includeR18) {
-    where.push('is_r18 = 0');
+  if (!options.includeR18 && tagSlug !== R18_TAG_SLUG) {
+    where.push(`
+      NOT EXISTS (
+        SELECT 1
+        FROM school_media_tags AS r18_links
+        INNER JOIN media_tags AS r18_tags
+          ON r18_tags.id = r18_links.tag_id
+        WHERE r18_links.media_id = school_media.id
+          AND r18_tags.slug = ?
+      )
+    `);
+    params.push(R18_TAG_SLUG);
   }
   if (options.schoolNameNorm?.trim()) {
     where.push('school_name_norm = ?');
     params.push(options.schoolNameNorm.trim());
+  }
+  if (tagSlug) {
+    where.push(`
+      EXISTS (
+        SELECT 1
+        FROM school_media_tags AS filter_links
+        INNER JOIN media_tags AS filter_tags
+          ON filter_tags.id = filter_links.tag_id
+        WHERE filter_links.media_id = school_media.id
+          AND filter_tags.slug = ?
+      )
+    `);
+    params.push(tagSlug);
   }
 
   const sql = `
