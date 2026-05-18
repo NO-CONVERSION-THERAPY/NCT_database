@@ -18,9 +18,9 @@ binding = "ASSETS"
 run_worker_first = true
 
 [[d1_databases]]
-binding = "DB"
+binding = "NCT_DB"
 database_name = "nct-database"
-database_id = "f6de668e-9666-4d9d-8854-9dfe25fb17ad"
+database_id = "f8b9618f-7f20-4ae4-88e3-64080a5a0bcb"
 migrations_dir = "./migrations"
 
 [[r2_buckets]]
