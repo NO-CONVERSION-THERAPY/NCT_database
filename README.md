@@ -244,7 +244,7 @@ npx wrangler d1 migrations apply DB --local --persist-to .wrangler/state
 | Project name | `nct-database` |
 | Production branch | 你的生产分支，例如 `main` |
 | Path / Root directory | 在本仓库部署填 `NCT_database`；如果本项目单独成库填 `/` |
-| Build command | `npm run check` |
+| Build command | `npm run build` |
 | Deploy command | `npm run deploy` |
 | Non-production branch deploy command | `npm run deploy:preview` |
 
