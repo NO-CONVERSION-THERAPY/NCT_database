@@ -3,7 +3,7 @@ main = "src/worker/index.ts"
 compatibility_date = "2026-04-19"
 workers_dev = true
 routes = [
-  { pattern = "testdb.medicago.top", custom_domain = true }
+  { pattern = "form.victimsunion.org", custom_domain = true }
 ]
 
 [observability.logs]
